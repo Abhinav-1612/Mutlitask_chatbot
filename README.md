@@ -11,7 +11,7 @@ A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **L
 ## ✨ Features
 
 - **🧠 Intelligent Routing**: Automatically routes questions to the appropriate tool (General Chat, RAG, Web Search, or Finance) using a zero-shot Llama 3.1-8b router.
-- **📚 RAG & Document Analysis**: Upload PDFs and instantly chat with your documents. Powered by **Qdrant** for lightning-fast semantic vector search.
+- **📚 RAG & Document Analysis**: Upload PDFs and instantly chat with your documents. Powered by **Pinecone** for lightning-fast semantic vector search and **FastEmbed** for efficient embeddings without heavy dependencies like PyTorch.
 - **📄 ArXiv Research Integration**: Ask about academic topics and instantly retrieve detailed abstracts and PDF links directly from ArXiv.
 - **🌐 Real-Time Web Search**: Uses DuckDuckGo to search the live internet for recent news and general queries.
 - **📈 Finance & Live Sports**: Get up-to-date stock prices via Yahoo Finance and live cricket/sports scores.
@@ -25,14 +25,16 @@ A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **L
 - **Backend API**: FastAPI (Python)
 - **AI Models**: Groq (Llama 3.3-70b for reasoning, Llama 3.1-8b for routing)
 - **Agent Orchestration**: LangChain & LangGraph
-- **Vector Database**: Qdrant (Local Storage)
-- **Persistent Storage**: SQLite (SQLAlchemy)
+- **Vector Database**: Pinecone (Serverless Cloud Vector DB)
+- **Embeddings**: FastEmbed (ONNX, lightweight, fast)
+- **Persistent Storage**: SQLite (SQLAlchemy & aiosqlite)
 
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
 - Python 3.10+
 - A [Groq API Key](https://console.groq.com/keys)
+- A [Pinecone API Key](https://www.pinecone.io/)
 
 ### 2. Installation
 
@@ -51,6 +53,7 @@ pip install -r requirements.txt
 Create a `.env` file in the root directory and add your API keys:
 ```env
 GROQ_API_KEY=your_groq_api_key_here
+PINECONE_API_KEY=your_pinecone_api_key_here
 ```
 
 ### 4. Running the Application
@@ -76,7 +79,7 @@ The UI will be accessible at `http://localhost:8501`.
 ├── app/
 │   ├── agents/          # LangGraph nodes, routing logic, and state
 │   ├── api/             # FastAPI endpoints (chat, upload, ui)
-│   ├── database/        # SQLite setup and Qdrant vector DB
+│   ├── database/        # SQLite setup and Pinecone vector DB integration
 │   ├── models/          # Pydantic schemas
 │   ├── tools/           # External APIs (Web search, ArXiv, Weather, Finance)
 │   ├── config.py        # Environment variables & configuration
@@ -93,9 +96,10 @@ The UI will be accessible at `http://localhost:8501`.
 2. **Supervisor**: Secondary validation net to extract tickers or refine routing before execution.
 3. **Specialist Nodes**:
    - `web_node`: Scrapes duckduckgo and Open-Meteo.
-   - `finance_node`: Scrapes Yahoo Finance via direct chart API.
-   - `rag_node`: Performs Qdrant similarity searches and ArXiv retrievals.
+   - `finance_node`: Retrieves stock data (via direct chart API) and live cricket scores.
+   - `rag_node`: Performs Pinecone similarity searches and ArXiv retrievals.
    - `general_node`: Direct conversational Llama 3.3-70b interacting with basic tools.
 
 ## 🤝 Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
+
