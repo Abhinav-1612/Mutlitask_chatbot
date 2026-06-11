@@ -9,46 +9,47 @@
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Core API ─────────────────────────────────────────────────────────────────
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
-sse-starlette==2.1.3
-python-multipart==0.0.12
+fastapi>=0.115.5
+uvicorn[standard]>=0.32.1
+sse-starlette>=2.1.3
+python-multipart>=0.0.12
 
 # ── Config & Validation ──────────────────────────────────────────────────────
-python-dotenv==1.0.1
-pydantic==2.10.2
-pydantic-settings==2.6.1
+python-dotenv>=1.0.1
+pydantic>=2.10.2
+pydantic-settings>=2.6.1
 
 # ── SQL Database (chat sessions & conversation history) ──────────────────────
-sqlalchemy==2.0.36
-aiosqlite==0.20.0          # async SQLite driver for SQLAlchemy
-greenlet==3.5.1            # required by SQLAlchemy for async execution
+sqlalchemy>=2.0.36
+aiosqlite>=0.20.0          # async SQLite driver for SQLAlchemy
+greenlet>=3.5.1            # required by SQLAlchemy for async execution
 
 # ── LangGraph / LangChain ────────────────────────────────────────────────────
 # RULE: Pin only direct imports, NOT transitive deps (avoids version hell)
-langgraph==0.2.55
-langchain-groq==0.2.2
+langgraph>=0.2.55
+langchain-groq>=0.2.2
 
 # ── Groq Inference ───────────────────────────────────────────────────────────
-groq==0.12.0
+groq>=0.12.0
 
 # ── Vector Database (Pinecone Cloud) ──────────────────────────────────────────
-pinecone==5.4.2
+pinecone>=5.4.2
 
 # ── Embeddings (fastembed — ONNX, NO torch, Python 3.13 ✅, ~130 MB) ─────────
-fastembed==0.8.0
+fastembed>=0.8.0
 
 # ── Document Processing ───────────────────────────────────────────────────────
-pypdf==5.1.0               # PDF text extraction
-tiktoken==0.8.0            # token counting for chunking
+pypdf>=5.1.0               # PDF text extraction
+tiktoken>=0.8.0            # token counting for chunking
 
 # ── Agent Tools ──────────────────────────────────────────────────────────────
-duckduckgo-search==6.3.7   # free web search, no API key
-yfinance==0.2.49           # stock prices
-arxiv==2.1.3               # academic papers
+duckduckgo-search>=6.3.7   # free web search, no API key
+yfinance>=0.2.49           # stock prices
+arxiv>=2.1.3               # academic papers
 
 # ── HTTP & Async ─────────────────────────────────────────────────────────────
-httpx==0.27.2
-aiohttp==3.11.9
-aiofiles==24.1.0
-requests==2.32.3
+httpx>=0.27.2
+aiohttp>=3.11.9
+aiofiles>=24.1.0
+requests>=2.32.3
+streamlit>=1.40.0
