@@ -4,6 +4,7 @@ import uuid
 import asyncio
 import json
 import time
+import os
 import re
 
 from app.sse import iter_sse_events
@@ -17,7 +18,7 @@ try:
 except ImportError:
     DB_AVAILABLE = False
 
-API_URL_BASE = "http://localhost:8000"
+API_URL_BASE = os.environ.get("API_URL_BASE", "http://localhost:8000").rstrip("/")
 
 # Page config
 st.set_page_config(
