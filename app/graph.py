@@ -27,11 +27,25 @@ from app.agents.nodes import (
     rag_node,
     web_node,
     finance_node,
+    farmer_node,
 )
 
 logger = logging.getLogger(__name__)
 
 # ── Conditional edge functions ────────────────────────────────────────────────
+
+def route_start(
+    state: UniversalAgentState,
+) -> Literal["farmer_node", "gateway_router"]:
+    """
+    If farmer_mode is enabled, bypass gateway and go straight to farmer_node.
+    Otherwise, standard gateway routing.
+    """
+    if state.get("farmer_mode"):
+        logger.debug("[graph] START → farmer_node (Farmer Mode active)")
+        return "farmer_node"
+    return "gateway_router"
+
 
 def route_after_gateway(
     state: UniversalAgentState,
@@ -88,9 +102,15 @@ def compile_graph():
     builder.add_node("rag_node",        rag_node)
     builder.add_node("web_node",        web_node)
     builder.add_node("finance_node",    finance_node)
+    builder.add_node("farmer_node",     farmer_node)
 
     # ── Wire edges ────────────────────────────────────────────────────────────
-    builder.add_edge(START, "gateway_router")
+    # Route from start based on farmer_mode flag
+    builder.add_conditional_edges(
+        START,
+        route_start,
+        {"farmer_node": "farmer_node", "gateway_router": "gateway_router"},
+    )
 
     # Gateway → general (fast path) or supervisor (tool path)
     builder.add_conditional_edges(
@@ -116,6 +136,7 @@ def compile_graph():
     builder.add_edge("rag_node",      END)
     builder.add_edge("web_node",      END)
     builder.add_edge("finance_node",  END)
+    builder.add_edge("farmer_node",   END)
 
     _compiled_graph = builder.compile()
     logger.info("[graph] ✅ LangGraph pipeline compiled successfully.")

@@ -20,6 +20,9 @@ class UniversalAgentState(TypedDict):
     query: str
     """The raw user message for this turn."""
 
+    farmer_mode: bool
+    """Toggle to route directly to the specialized Farmer node."""
+
     messages: Annotated[list[dict], operator.add]
     """
     Full conversation history as list of {"role": ..., "content": ...} dicts.
@@ -69,11 +72,13 @@ def initial_state(
     uploaded_files: list[dict] | None = None,
     active_url: str | None = None,
     user_groq_key: str = "",
+    farmer_mode: bool = False,
 ) -> UniversalAgentState:
     """Build a clean initial state for a new graph invocation."""
     return UniversalAgentState(
         session_id=session_id,
         query=query,
+        farmer_mode=farmer_mode,
         messages=history or [],
         next_node="general",
         route_used="general",

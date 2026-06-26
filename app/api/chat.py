@@ -106,6 +106,7 @@ async def chat(
         uploaded_files=[{"file_id": fid} for fid in request.file_ids],
         active_url=request.active_url,
         user_groq_key=request.user_groq_key or "",
+        farmer_mode=request.farmer_mode,
     )
 
     # ── Run LangGraph pipeline ────────────────────────────────────────────────
@@ -150,6 +151,7 @@ async def chat_stream(
     file_ids:      str  = Query(default="", description="Comma-separated file IDs"),
     active_url:    str  = Query(default=""),
     user_groq_key: str  = Query(default="", description="Optional user Groq API key"),
+    farmer_mode:   bool = Query(default=False, description="Toggle Farmer Mode"),
     db: AsyncSession = Depends(get_db),
 ) -> EventSourceResponse:
     """
@@ -186,6 +188,7 @@ async def chat_stream(
                 uploaded_files=[{"file_id": fid} for fid in file_id_list],
                 active_url=active_url or None,
                 user_groq_key=user_groq_key or "",
+                farmer_mode=farmer_mode,
             )
 
             yield {

@@ -352,6 +352,11 @@ with st.sidebar:
         )
 
     st.markdown("---")
+    
+    # ── Farmer Mode Toggle ──────────────────────────────────────────────────
+    farmer_mode = st.toggle("🌾 Farmer Mode", key="farmer_mode_toggle", help="Specialized mode for agricultural advice, live crop prices, and govt schemes.")
+    
+    st.markdown("---")
 
     # ── RAG Inputs ────────────────────────────────────────────────────────────
     st.markdown(
@@ -557,6 +562,7 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                 "file_ids":      ",".join(st.session_state.uploaded_file_ids),
                 "active_url":    st.session_state.active_url or "",
                 "user_groq_key": active_groq_key,
+                "farmer_mode":   "true" if farmer_mode else "false",
             }
 
             response = requests.get(
@@ -600,6 +606,7 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                         "web":     "🌐 Web Search Complete",
                         "rag":     "📚 Document Analysis Complete",
                         "finance": "📈 Finance / Cricket Data Retrieved",
+                        "farmer":  "🌾 Farming Analysis Complete",
                     }
                     label = route_labels.get(route, "✅ Response Ready")
                     status.update(label=label, state="complete", expanded=False)
@@ -620,6 +627,7 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                     "finance":   ("📈 FINANCE / CRICKET", "#fbbf24"),
                     "web":       ("🌐 WEB SEARCH",        "#38bdf8"),
                     "rag":       ("📚 DOCS",              "#34d399"),
+                    "farmer":    ("🌾 FARMER MODE",       "#84cc16"),
                     "general":   ("💬 GENERAL",           "#a78bfa"),
                     "instagram": ("📸 INSTAGRAM",         "#e1306c"),
                 }
@@ -632,45 +640,75 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                     f"border: 1px solid {tag_color}33;'>{tag_label}</span>\n\n"
                 )
 
+                # ── Extract news images from sources ──────────────────────────
+                news_with_images = [
+                    s for s in sources
+                    if s.get("image_url") and s.get("type") == "web" and s.get("url")
+                ]
+
+                # ── Render route badge ─────────────────────────────────────────
                 st.markdown(route_html, unsafe_allow_html=True)
+                
+                # Collect HTML to save to history
+                persistent_html = route_html
+
+                if news_with_images:
+                    for s in news_with_images:
+                        # Default fallback data if missing
+                        cat = str(s.get("category", "NEWS")).upper()
+                        domain = str(s.get("source", "news.com")).lower()
+                        pub = str(s.get("published_at", ""))[:10]
+                        title = str(s.get("title", ""))
+                        snippet = str(s.get("snippet", ""))[:180] + "..." if len(str(s.get("snippet", ""))) > 180 else str(s.get("snippet", ""))
+                        
+                        card_html = f"""
+<div style='background-color: #fcfcfc; border-radius: 8px; overflow: hidden; margin-bottom: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); color: #1a1a1a; font-family: sans-serif; border: 1px solid #eaeaea;'>
+    <img src='{s["image_url"]}' style='width: 100%; height: auto; display: block;' onerror="this.style.display='none'">
+    <div style='padding: 20px;'>
+        <div style='display: flex; align-items: center; gap: 12px; margin-bottom: 15px; font-size: 0.75rem; color: #666; font-weight: 600; letter-spacing: 0.5px;'>
+            <span style='background-color: #fcebeb; color: #d32f2f; padding: 4px 8px; border-radius: 3px; font-weight: 700;'>{cat}</span>
+            <span>{domain}</span>
+            <span>•</span>
+            <span>{pub}</span>
+        </div>
+        <h2 style='margin: 0 0 15px 0; font-size: 1.6rem; font-weight: 700; color: #111; font-family: Georgia, serif; line-height: 1.3;'>
+            {title}
+        </h2>
+        <p style='margin: 0 0 20px 0; font-size: 1.05rem; color: #555; line-height: 1.6;'>
+            {snippet}
+        </p>
+        <a href='{s["url"]}' target='_blank' style='display: inline-block; text-decoration: none; color: #111; font-weight: 700; font-size: 0.85rem; letter-spacing: 1px; border-bottom: 2px solid #111; padding-bottom: 2px;'>
+            READ FULL STORY &rarr;
+        </a>
+    </div>
+</div>
+"""
+                        st.markdown(card_html, unsafe_allow_html=True)
+                        persistent_html += card_html
+                    st.markdown("---")  # spacing before text
+                    persistent_html += "---<br>"
+
+                # ── Stream the text answer ─────────────────────────────────────
                 st.write_stream(stream_text(bot_reply))
 
+                # ── Source links (only for non-image results like arxiv) ───────
+                source_footer = ""
                 if sources:
                     valid_sources = [s for s in sources if s.get("type") in ("web", "arxiv") and s.get("url")]
-                    if valid_sources:
-                        # ── Show article images (news results from NewsAPI) ────────
-                        news_with_images = [
-                            s for s in valid_sources
-                            if s.get("image_url") and s.get("type") == "web"
-                        ]
-                        if news_with_images:
-                            st.markdown("---")
-                            cols = st.columns(min(len(news_with_images), 3))
-                            for col, s in zip(cols, news_with_images[:3]):
-                                with col:
-                                    try:
-                                        st.image(s["image_url"], use_container_width=True)
-                                    except Exception:
-                                        pass  # Skip broken images silently
-                                    st.markdown(
-                                        f"<small>**{s.get('title', '')[:60]}**<br>"
-                                        f"[Read →]({s['url']})</small>",
-                                        unsafe_allow_html=True,
-                                    )
-
-                        # ── Source link row ────────────────────────────────────────
+                    non_image_sources = [s for s in valid_sources if not s.get("image_url") or s.get("type") == "arxiv"]
+                    if non_image_sources and not news_with_images:
                         source_lines = []
-                        for i, s in enumerate(valid_sources[:5], 1):
+                        for i, s in enumerate(non_image_sources[:5], 1):
                             title = s.get("title", f"Source {i}")[:60]
                             url   = s.get("url", "")
                             icon  = "📄" if s.get("type") == "arxiv" else "🔗"
                             if url:
                                 source_lines.append(f"{icon} [{i}. {title}]({url})")
-                        if source_lines and not news_with_images:
-                            # Only show plain text source list if no images were shown
-                            st.markdown("\n\n---\n**Sources:** " + " · ".join(source_lines))
+                        if source_lines:
+                            source_footer = "\n\n---\n**Sources:** " + " · ".join(source_lines)
+                            st.markdown(source_footer)
 
-                full_content = route_html + bot_reply
+                full_content = persistent_html + bot_reply + source_footer
                 st.session_state.messages.append({"role": "assistant", "content": full_content})
             else:
                 message = stream_error or "The backend stream ended without returning an answer."

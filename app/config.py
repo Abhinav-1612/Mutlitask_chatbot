@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # ── News & Web Search API Keys ───────────────────────────────────────────
     news_api_key: str = ""       # newsapi.org — 200 req/day free tier
     tavily_api_key: str = ""     # tavily.com — 1000 req/month free tier (news fallback)
+    currents_api_key: str = ""   # currentsapi.services
+    data_gov_api_key: str = ""   # data.gov.in AGMARKNET API key
+    agmarknet_resource_id: str = "9ef84268-d588-465a-a308-a864a43d0070" # Default daily wholesale prices
 
 
     # ── SQL Database ──────────────────────────────────────────────────────────

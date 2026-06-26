@@ -241,12 +241,14 @@ def _fetch_cricket_espn() -> dict:
     return {"matches": matches, "source": "ESPN Cricinfo"}
 
 
-def _fetch_cricket_ddg_fallback() -> dict:
+def _fetch_cricket_ddg_fallback(query: str = "") -> dict:
     """Strategy 4: DuckDuckGo search — richer cricket score summaries."""
     try:
         from duckduckgo_search import DDGS
         summaries: list[dict] = []
-        search_queries = [
+        
+        # Use the specific user query if provided, otherwise fallback to generic
+        search_queries = [query] if query else [
             "live cricket score today 2024",
             "cricket match score right now",
         ]
@@ -284,7 +286,7 @@ def _fetch_cricket_ddg_fallback() -> dict:
         return {"matches": [], "note": "Could not fetch live cricket scores. Please try again."}
 
 
-def _fetch_cricket_sync() -> dict[str, Any]:
+def _fetch_cricket_sync(query: str = "") -> dict[str, Any]:
     """
     Fetch live cricket scores using a cascading strategy:
       1. RapidAPI Cricbuzz (free tier, if RAPIDAPI_KEY set)
@@ -325,13 +327,13 @@ def _fetch_cricket_sync() -> dict[str, Any]:
 
     # Strategy 4 — DuckDuckGo news fallback
     logger.info("[finance] Cricket via DuckDuckGo fallback")
-    return _fetch_cricket_ddg_fallback()
+    return _fetch_cricket_ddg_fallback(query)
 
 
-async def get_cricket_scores() -> dict[str, Any]:
+async def get_cricket_scores(query: str = "") -> dict[str, Any]:
     """Async live cricket scores."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _fetch_cricket_sync)
+    return await loop.run_in_executor(None, _fetch_cricket_sync, query)
 
 
 def format_cricket_result(data: dict) -> str:

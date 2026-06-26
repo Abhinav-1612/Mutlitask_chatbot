@@ -16,6 +16,7 @@ import html
 import json
 import logging
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -23,6 +24,22 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Boilerplate phrases that indicate a useless snippet (cookie policies, etc.)
+_JUNK_SNIPPETS = re.compile(
+    r"cookie|privacy policy|terms of service|javascript|subscribe|sign in|log in"
+    r"|advertisement|we may earn|opt out|click here to",
+    re.IGNORECASE,
+)
+
+
+def _clean_snippet(text: str, max_chars: int = 300) -> str:
+    """Strip HTML, collapse whitespace and remove boilerplate snippets."""
+    cleaned = re.sub(r"<[^>]+>", " ", text or "")
+    cleaned = re.sub(r"\s+", " ", html.unescape(cleaned)).strip()
+    if len(cleaned) < 30 or _JUNK_SNIPPETS.search(cleaned):
+        return ""
+    return cleaned[:max_chars]
 
 
 class NewsAPIQuotaExceeded(Exception):
@@ -332,19 +349,25 @@ def _fetch_newsapi_sync(
 
     articles = data.get("articles", [])
     results = []
-    for article in articles[:max_results]:
+    for article in articles[:max_results * 2]:  # over-fetch to account for junk
         source_name = (article.get("source") or {}).get("name", "")
-        # Skip articles where content is "[Removed]"
-        if article.get("title", "") == "[Removed]":
+        title = article.get("title", "") or ""
+        # Skip removed articles
+        if title in ("[Removed]", ""):
             continue
+        snippet = _clean_snippet(
+            article.get("description") or article.get("content", "")
+        )
         results.append({
-            "title": article.get("title", ""),
+            "title": title,
             "url": article.get("url", ""),
-            "snippet": article.get("description") or article.get("content", ""),
+            "snippet": snippet,
             "published_at": article.get("publishedAt", ""),
             "source": source_name,
             "image_url": article.get("urlToImage") or "",
         })
+        if len(results) >= max_results:
+            break
     logger.info("[newsapi] query='%s' → %d articles", query, len(results))
     return results
 
@@ -386,7 +409,7 @@ def _fetch_tavily_news_sync(
         {
             "title": r.get("title", ""),
             "url": r.get("url", ""),
-            "snippet": r.get("content", ""),
+            "snippet": _clean_snippet(r.get("content", "")),
             "published_at": r.get("published_date", ""),
             "source": urllib.parse.urlparse(r.get("url", "")).netloc,
             "image_url": "",
@@ -417,16 +440,59 @@ def _fetch_ddg_news_sync(
             {
                 "title": r.get("title", ""),
                 "url": r.get("url", ""),
-                "snippet": r.get("body", ""),
+                "snippet": _clean_snippet(r.get("body", "")),
                 "published_at": r.get("date", ""),
                 "source": r.get("source", ""),
                 "image_url": r.get("image", ""),
             }
             for r in raw
+            if r.get("title")
         ]
     except Exception as exc:
         logger.warning("[ddg_news] failed: %s", exc)
         return []
+
+
+def _fetch_currents_api_sync(
+    query: str,
+    max_results: int = 8,
+) -> list[dict[str, Any]]:
+    """Primary news source: Currents API (currentsapi.services)."""
+    from app.config import settings
+
+    api_key = settings.currents_api_key.strip()
+    if not api_key:
+        raise ValueError("CURRENTS_API_KEY not configured")
+
+    encoded_query = urllib.parse.quote_plus(query)
+    url = f"https://api.currentsapi.services/v1/search?apiKey={api_key}&keywords={encoded_query}&language=en&page_size={max_results}"
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Omni-Agent/1.0"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=12) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    if data.get("status") != "ok":
+        raise Exception(f"Currents API error: {data}")
+
+    raw_results = data.get("news", [])
+    results = [
+        {
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "snippet": _clean_snippet(r.get("description", "")),
+            "published_at": r.get("published", ""),
+            "source": r.get("author", "") or urllib.parse.urlparse(r.get("url", "")).netloc,
+            "image_url": r.get("image", "") if r.get("image") != "None" else "",
+            "category": r.get("category", ["general"])[0] if r.get("category") else "general"
+        }
+        for r in raw_results
+    ]
+    logger.info("[currents] query='%s' → %d results", query, len(results))
+    return results
 
 
 def _news_search_sync(
@@ -436,12 +502,22 @@ def _news_search_sync(
 ) -> list[dict[str, Any]]:
     """
     Tiered news search:
-      1. NewsAPI (primary — has images)
-      2. Tavily  (fallback — when quota hit)
-      3. DuckDuckGo news (last resort)
-      4. Google News RSS (final safety net)
+      1. Currents API (primary — excellent for global news)
+      2. NewsAPI (fallback — has images)
+      3. Tavily  (fallback — when quota hit)
+      4. DuckDuckGo news (last resort)
+      5. Google News RSS (final safety net)
     """
-    # 1. Try NewsAPI
+    # 1. Try Currents API
+    try:
+        results = _fetch_currents_api_sync(query, max_results)
+        if results:
+            return results
+        logger.info("[news] Currents API returned 0 results — trying NewsAPI")
+    except Exception as exc:
+        logger.warning("[news] Currents API failed (%s) — falling back to NewsAPI", exc)
+
+    # 2. Try NewsAPI
     try:
         results = _fetch_newsapi_sync(query, max_results, freshness)
         if results:
@@ -452,7 +528,7 @@ def _news_search_sync(
     except Exception as exc:
         logger.warning("[news] NewsAPI failed (%s) — falling back to Tavily", exc)
 
-    # 2. Try Tavily
+    # 3. Try Tavily
     try:
         results = _fetch_tavily_news_sync(query, max_results)
         if results:
@@ -580,11 +656,9 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
 
 def format_news_results(results: list[dict[str, Any]], retrieved_date: str) -> str:
     """
-    Render news cards in a rich format:
-      [IMAGE if available]
-      • bullet points from snippet
-      Source: publisher name  |  📅 date  |  [Read →](url)
-      ---
+    Render news cards as clean text for streaming.
+    Images are injected separately by the Streamlit frontend using the sources list.
+    Format: Title → bullet points from snippet → source | date | read link
     """
     if not results:
         return "No current news results found."
@@ -596,20 +670,19 @@ def format_news_results(results: list[dict[str, Any]], retrieved_date: str) -> s
     ]
 
     for result in results:
+        # If the article has an image, Streamlit renders it as a beautiful HTML card.
+        # Skip it here so we don't repeat the text redundantly!
+        if result.get("image_url"):
+            continue
+
         title       = result.get("title", "Untitled")
         pub         = result.get("published_at", "")
         source      = result.get("source", "")
         snippet     = result.get("snippet", "")
         url         = result.get("url", "")
-        image_url   = result.get("image_url", "")
 
         # ── Title ────────────────────────────────────────────────────────
         lines.append(f"#### {title}")
-
-        # ── Image (if available from NewsAPI) ────────────────────────────
-        if image_url:
-            lines.append(f"![{title}]({image_url})")
-            lines.append("")
 
         # ── Snippet as bullet points ──────────────────────────────────────
         if snippet:
@@ -624,7 +697,6 @@ def format_news_results(results: list[dict[str, Any]], retrieved_date: str) -> s
         if source:
             meta_parts.append(f"🗞️ **{source}**")
         if pub:
-            # Shorten ISO timestamps: 2024-06-26T12:00:00Z → 2024-06-26
             short_pub = pub[:10] if len(pub) >= 10 else pub
             meta_parts.append(f"📅 {short_pub}")
         if url:

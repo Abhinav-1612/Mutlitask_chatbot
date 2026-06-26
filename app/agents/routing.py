@@ -243,6 +243,8 @@ def is_context_followup(query: str) -> bool:
             r"\bhow about there\b",
             r"\bsame (?:for|question)\b",
             r"\bthat one\b",
+            r"^\s*(?:no\s+)?i mean(?:t)?\b",
+            r"^\s*mean(?:ing)?\b",
         ),
     )
 

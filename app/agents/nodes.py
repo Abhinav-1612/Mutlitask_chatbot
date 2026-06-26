@@ -58,6 +58,7 @@ from app.tools.finance import (
     get_cricket_scores, format_cricket_result,
 )
 from app.tools.arxiv_tool import search_arxiv, format_arxiv_results
+from app.tools.agriculture import get_mandi_prices, format_mandi_prices
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def _extract_weather_location(query: str) -> str:
 
     # Match: "weather of/in/for/at <location>"
     match = re.search(
-        r"\b(?:of|in|for|at)\s+([A-Za-z][\w\s,]+?)(?:\s+(?:today|tomorrow|tonight|right\s*now|now))?[?.!]*$",
+        r"\b(?:of|in|for|at)\s+([A-Za-z][\w\s,]+?)(?:\s+(?:today|tomorrow|tonight|right\s*now|now|at\s*current|current|currently))?[?.!]*$",
         query,
         flags=re.IGNORECASE,
     )
@@ -154,8 +155,8 @@ def _extract_weather_location(query: str) -> str:
 
     # Final fallback: strip all weather-related words, return what's left
     cleaned = re.sub(
-        r"\b(?:what(?:'s| is)?|how(?:'s| is)?|the|current|weather|temperature|forecast|"
-        r"humidity|conditions?|today|tomorrow|tonight|right\s*now|now|please|tell|me|of|is|get)\b",
+        r"\b(?:what(?:'s| is)?|how(?:'s| is)?|the|current|currently|at current|weather|temperature|forecast|"
+        r"humidity|conditions?|today|tomorrow|tonight|right\s*now|now|please|tell|me|of|is|get|india)\b",
         " ",
         query,
         flags=re.IGNORECASE,
@@ -472,6 +473,9 @@ async def web_node(state: UniversalAgentState) -> dict:
                 "url": r["url"],
                 "published_at": r.get("published_at", ""),
                 "image_url": r.get("image_url", ""),
+                "snippet": r.get("snippet", ""),
+                "source": r.get("source", ""),
+                "category": r.get("category", "news"),
             }
             for r in results if r.get("url")
         ]
@@ -559,7 +563,7 @@ async def finance_node(state: UniversalAgentState) -> dict:
 
     if is_sports:
         logs.append(_ts("finance_node", "Fetching live cricket scores..."))
-        data   = await get_cricket_scores()
+        data   = await get_cricket_scores(query=query)
         answer = format_cricket_result(data)
         sources.append({"type": "sports", "source": "cricapi.com"})
     else:
@@ -595,4 +599,153 @@ async def finance_node(state: UniversalAgentState) -> dict:
         "sources":      sources,
         "route_used":   "finance",
         "logs":         logs,
+    }
+
+
+
+# ##1. NewsAPI (primary)   → 200 req/day, returns images + text
+# 2. Tavily (fallback)   → kicks in when NewsAPI quota is hit
+# 3. DuckDuckGo (backup) → last resort if Tavily also fails
+# 4. Google News RSS     → final safety net
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NODE 7 — Farmer Node (Specialized Agriculture Assistant)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def farmer_node(state: UniversalAgentState) -> dict:
+    """
+    Dedicated node for Farmer Mode.
+    Handles weather-aware farming advice, crop market prices, and govt schemes.
+    """
+    query = state["query"]
+    logs = state.get("logs", [])
+    sources = state.get("sources", [])
+    logs.append(_ts("farmer_node", f"Farmer query: '{query[:50]}'"))
+    llm_fast, llm_smart = _get_llms(state.get("user_groq_key", ""))
+
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %A")
+    
+    # Check if it's a weather query
+    if is_weather_query(query):
+        location = _extract_weather_location(query)
+        if not location:
+            location = "your region"
+            
+        logs.append(_ts("farmer_node", f"Fetching weather for: {location}"))
+        weather_data = await get_weather(location)
+        formatted_weather = format_weather_result(weather_data)
+        
+        system = (
+            "You are a specialized Agricultural Assistant for farmers in India. "
+            "You are provided with live weather data for the farmer's region. "
+            "Provide actionable, weather-aware farming advice based on this forecast. "
+            "For example: 'Delay pesticide spraying due to upcoming rain' or 'Good time to harvest'. "
+            "Be practical, encouraging, and use simple language. "
+            f"The current local date is {current_date}."
+        )
+        user_prompt = f"WEATHER DATA:\n{formatted_weather}\n\nFARMER QUESTION: {query}"
+        sources.append({"type": "weather", "location": location})
+        
+    # Check if it's about crop prices/market
+    elif re.search(r"\b(?:price|prices|mandi|rate|rates|market|buy|sell)\b", query, re.IGNORECASE):
+        logs.append(_ts("farmer_node", "Fetching AGMARKNET mandi prices"))
+        
+        # Extract commodity and state using fast LLM
+        resp = await llm_fast.ainvoke([HumanMessage(
+            content=f"Extract the primary crop/commodity name AND the Indian state from this query. Correct any spelling (e.g. 'potatos' -> 'Potato'). Expand state abbreviations (e.g. 'UP' -> 'Uttar Pradesh'). Reply in format 'Commodity|State'. If state is unknown, reply 'Commodity|'. If commodity is unknown, reply 'Unknown|'.\nQuery: {query}"
+        )])
+        parts = resp.content.strip().split('|')
+        commodity = parts[0].strip().title() if len(parts) > 0 else "Unknown"
+        state_filter = parts[1].strip().title() if len(parts) > 1 else ""
+        
+        if commodity and commodity != "Unknown":
+            mandi_data = await get_mandi_prices(commodity, state=state_filter, max_results=10)
+            
+            # If AGMARKNET fails or returns nothing, fallback to Web Search
+            if "error" in mandi_data or not mandi_data.get("records"):
+                logs.append(_ts("farmer_node", "AGMARKNET empty/failed, falling back to Web Search"))
+                # Build a targeted search query instead of the raw user sentence
+                enhanced_query = f"{commodity} price in {state_filter if state_filter else 'India'} mandi today"
+                raw_results = await web_search(enhanced_query, max_results=5)
+                formatted_data = format_search_results(raw_results)
+                sources.extend(raw_results)
+                data_context = f"AGMARKNET had no live data for this specific region today.\nLIVE WEB SEARCH RESULTS:\n{formatted_data}"
+            else:
+                formatted_data = format_mandi_prices(mandi_data, commodity)
+                sources.append({"type": "mandi", "commodity": commodity, "source": "AGMARKNET"})
+                data_context = f"AGMARKNET MANDI PRICES:\n{formatted_data}"
+        else:
+            # Fallback to web search if no commodity detected
+            logs.append(_ts("farmer_node", "No commodity detected, falling back to Web Search"))
+            clean_query = re.sub(r"^(please\s+|tell me\s+|tell\s+|what is\s+|find\s+|search for\s+|about\s+|can you\s+)+", "", query, flags=re.IGNORECASE).strip()
+            enhanced_query = f"{clean_query} agriculture India latest"
+            raw_results = await web_search(enhanced_query, max_results=5)
+            formatted_data = format_search_results(raw_results)
+            sources.extend(raw_results)
+            data_context = f"LIVE WEB SEARCH RESULTS:\n{formatted_data}"
+            
+        system = (
+            "You are a specialized Agricultural Assistant for farmers in India. "
+            "You have live data regarding crop prices. "
+            "Summarize the data clearly for the farmer. "
+            "Highlight the crop name, location/mandi, and current rate. "
+            "Use emojis (🌾💰🚜) and clear bullet points. Do not hallucinate data. "
+            f"The current local date is {current_date}."
+        )
+        user_prompt = f"{data_context}\n\nFARMER QUESTION: {query}"
+        
+    # Check if it's about govt schemes, news, or updates
+    elif re.search(r"\b(?:scheme|schemes|schems|government|govt|yojana|pm kisan|news|update|updates|subsidy|loan)\b", query, re.IGNORECASE):
+        logs.append(_ts("farmer_node", "Fetching live scheme/news data via Web Search"))
+        clean_query = re.sub(r"^(please\s+|tell me\s+|tell\s+|what is\s+|find\s+|search for\s+|about\s+|can you\s+)+", "", query, flags=re.IGNORECASE).strip()
+        enhanced_query = f"{clean_query} agriculture India latest"
+        raw_results = await web_search(enhanced_query, max_results=5)
+        formatted_web = format_search_results(raw_results)
+        
+        system = (
+            "You are a specialized Agricultural Assistant for farmers in India. "
+            "You have performed a web search to find government scheme details or agricultural news. "
+            "Summarize the search results clearly for the farmer. "
+            "Explain the benefits simply and how to apply (if a scheme). "
+            "Use emojis (🌾💰🚜) and clear bullet points. Do not hallucinate data. "
+            f"The current local date is {current_date}."
+        )
+        user_prompt = f"LIVE WEB SEARCH RESULTS:\n{formatted_web}\n\nFARMER QUESTION: {query}"
+        sources.extend(raw_results)
+        
+    # General farming/basic knowledge fallback
+    else:
+        logs.append(_ts("farmer_node", "Handling general farming question"))
+        system = (
+            "You are a specialized Agricultural Assistant for farmers in India. "
+            "Answer the farmer's question using your basic knowledge. "
+            "Focus on crop health, soil management, fertilizers, and best practices. "
+            "Be respectful, practical, and use simple language. "
+        )
+        user_prompt = f"FARMER QUESTION: {query}"
+
+    # Build messages list including conversation history
+    history = state.get("messages", [])
+    
+    # Convert dict history to LangChain message objects
+    langchain_history = []
+    for msg in history:
+        if msg.get("role") == "user":
+            langchain_history.append(HumanMessage(content=msg.get("content", "")))
+        elif msg.get("role") == "assistant":
+            from langchain_core.messages import AIMessage
+            langchain_history.append(AIMessage(content=msg.get("content", "")))
+
+    messages_to_send = [SystemMessage(content=system)] + langchain_history + [HumanMessage(content=user_prompt)]
+
+    response = await llm_smart.ainvoke(messages_to_send)
+
+    answer = response.content.strip()
+    logs.append(_ts("farmer_node", "Farmer response complete."))
+    
+    return {
+        "final_answer": answer,
+        "sources": sources,
+        "route_used": "farmer",
+        "logs": logs,
     }

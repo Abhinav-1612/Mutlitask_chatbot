@@ -38,11 +38,13 @@ class ChatRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list, description="IDs of previously uploaded files.")
     active_url: str | None = Field(None, description="Optional URL for context.")
     user_groq_key: str = Field(default="", description="Optional user-supplied Groq API key.")
+    farmer_mode: bool = Field(default=False, description="Whether to route to the specialized farmer agent.")
 
     model_config = {"json_schema_extra": {"example": {
         "session_id": "abc123",
         "message": "What is the current Tesla stock price?",
         "user_groq_key": "",
+        "farmer_mode": False,
     }}}
 
 
