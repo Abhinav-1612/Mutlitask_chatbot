@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     rapidapi_key: str = ""       # RapidAPI key for Cricbuzz cricket API (free tier)
     cricapi_key: str = ""        # cricapi.com key (free tier at cricapi.com)
 
+    # ── News & Web Search API Keys ───────────────────────────────────────────
+    news_api_key: str = ""       # newsapi.org — 200 req/day free tier
+    tavily_api_key: str = ""     # tavily.com — 1000 req/month free tier (news fallback)
+
 
     # ── SQL Database ──────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./data/omni_agent.db"

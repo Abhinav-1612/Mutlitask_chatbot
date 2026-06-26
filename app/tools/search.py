@@ -1,4 +1,14 @@
-"""Fresh web/news search and structured current-weather tools."""
+"""
+Fresh web/news search and structured current-weather tools.
+
+News search waterfall (news queries only):
+  1. NewsAPI (newsapi.org)  — primary, 200 req/day free tier, returns images
+  2. Tavily                 — fallback when NewsAPI quota is hit
+  3. Google News RSS        — last resort if Tavily also fails
+
+General web search (all other queries):
+  DuckDuckGo — unchanged from before
+"""
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +23,11 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class NewsAPIQuotaExceeded(Exception):
+    """Raised when NewsAPI returns a 429 / quota-exhausted response."""
+
 
 _WEATHER_CODES = {
     0: "Clear sky",
@@ -262,41 +277,240 @@ def _bing_web_rss_sync(query: str, max_results: int) -> list[dict[str, Any]]:
     return results
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# NEWS SEARCH — Tiered: NewsAPI → Tavily → Google News RSS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _fetch_newsapi_sync(
+    query: str,
+    max_results: int = 8,
+    freshness: str | None = "d",
+) -> list[dict[str, Any]]:
+    """
+    Primary news source: newsapi.org
+    Returns articles with image_url field.
+    Raises NewsAPIQuotaExceeded on 429 / plan-limit errors.
+    """
+    from app.config import settings
+
+    api_key = settings.news_api_key.strip()
+    if not api_key:
+        raise ValueError("NEWS_API_KEY not configured")
+
+    # Map freshness codes → NewsAPI 'from' date offset
+    from datetime import datetime, timedelta, timezone
+    freshness_days = {"d": 1, "w": 7, "m": 30}.get(freshness or "d", 1)
+    from_date = (datetime.now(timezone.utc) - timedelta(days=freshness_days)).strftime("%Y-%m-%d")
+
+    params = urllib.parse.urlencode({
+        "q": query,
+        "from": from_date,
+        "sortBy": "publishedAt",
+        "language": "en",
+        "pageSize": min(max_results, 20),
+        "apiKey": api_key,
+    })
+    url = f"https://newsapi.org/v2/everything?{params}"
+    request = urllib.request.Request(url, headers={"User-Agent": "Omni-Agent/1.0"})
+
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (426, 429, 401):
+            body = exc.read().decode("utf-8", errors="ignore")
+            logger.warning("[newsapi] Quota/auth error %d: %s", exc.code, body[:200])
+            raise NewsAPIQuotaExceeded(f"NewsAPI HTTP {exc.code}") from exc
+        raise
+
+    status = data.get("status", "")
+    if status != "ok":
+        code = data.get("code", "")
+        if code in ("rateLimited", "maximumResultsReached", "apiKeyExhausted", "apiKeyInvalid", "apiKeyDisabled"):
+            raise NewsAPIQuotaExceeded(f"NewsAPI error code: {code}")
+        raise RuntimeError(f"NewsAPI returned status={status}, code={code}")
+
+    articles = data.get("articles", [])
+    results = []
+    for article in articles[:max_results]:
+        source_name = (article.get("source") or {}).get("name", "")
+        # Skip articles where content is "[Removed]"
+        if article.get("title", "") == "[Removed]":
+            continue
+        results.append({
+            "title": article.get("title", ""),
+            "url": article.get("url", ""),
+            "snippet": article.get("description") or article.get("content", ""),
+            "published_at": article.get("publishedAt", ""),
+            "source": source_name,
+            "image_url": article.get("urlToImage") or "",
+        })
+    logger.info("[newsapi] query='%s' → %d articles", query, len(results))
+    return results
+
+
+def _fetch_tavily_news_sync(
+    query: str,
+    max_results: int = 8,
+) -> list[dict[str, Any]]:
+    """
+    Fallback news source: Tavily search API with topic='news'.
+    Returns standardised result dicts (no image_url — Tavily doesn't provide them).
+    """
+    from app.config import settings
+
+    api_key = settings.tavily_api_key.strip()
+    if not api_key:
+        raise ValueError("TAVILY_API_KEY not configured")
+
+    payload = json.dumps({
+        "api_key": api_key,
+        "query": query,
+        "topic": "news",
+        "search_depth": "basic",
+        "max_results": max_results,
+        "include_answer": False,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "Omni-Agent/1.0"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=12) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    raw_results = data.get("results", [])
+    results = [
+        {
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "snippet": r.get("content", ""),
+            "published_at": r.get("published_date", ""),
+            "source": urllib.parse.urlparse(r.get("url", "")).netloc,
+            "image_url": "",
+        }
+        for r in raw_results
+    ]
+    logger.info("[tavily] query='%s' → %d results", query, len(results))
+    return results
+
+
+def _fetch_ddg_news_sync(
+    query: str,
+    max_results: int = 8,
+    freshness: str | None = "d",
+) -> list[dict[str, Any]]:
+    """Last-resort news via DuckDuckGo news API."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            raw = list(ddgs.news(
+                query,
+                region="wt-wt",
+                safesearch="moderate",
+                timelimit=freshness,
+                max_results=max_results,
+            ))
+        return [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": r.get("body", ""),
+                "published_at": r.get("date", ""),
+                "source": r.get("source", ""),
+                "image_url": r.get("image", ""),
+            }
+            for r in raw
+        ]
+    except Exception as exc:
+        logger.warning("[ddg_news] failed: %s", exc)
+        return []
+
+
+def _news_search_sync(
+    query: str,
+    max_results: int = 8,
+    freshness: str | None = "d",
+) -> list[dict[str, Any]]:
+    """
+    Tiered news search:
+      1. NewsAPI (primary — has images)
+      2. Tavily  (fallback — when quota hit)
+      3. DuckDuckGo news (last resort)
+      4. Google News RSS (final safety net)
+    """
+    # 1. Try NewsAPI
+    try:
+        results = _fetch_newsapi_sync(query, max_results, freshness)
+        if results:
+            return results
+        logger.info("[news] NewsAPI returned 0 results — trying Tavily")
+    except NewsAPIQuotaExceeded as exc:
+        logger.warning("[news] NewsAPI quota exceeded (%s) — falling back to Tavily", exc)
+    except Exception as exc:
+        logger.warning("[news] NewsAPI failed (%s) — falling back to Tavily", exc)
+
+    # 2. Try Tavily
+    try:
+        results = _fetch_tavily_news_sync(query, max_results)
+        if results:
+            return results
+        logger.info("[news] Tavily returned 0 results — trying DuckDuckGo")
+    except Exception as exc:
+        logger.warning("[news] Tavily failed (%s) — falling back to DuckDuckGo", exc)
+
+    # 3. Try DuckDuckGo news
+    results = _fetch_ddg_news_sync(query, max_results, freshness)
+    if results:
+        return results
+
+    # 4. Google News RSS (final safety net)
+    try:
+        return _google_news_rss_sync(query, max_results, freshness)
+    except Exception as exc:
+        logger.error("[news] All news sources failed. Last error: %s", exc)
+        return []
+
+
+async def news_search(
+    query: str,
+    max_results: int = 8,
+    freshness: str | None = "d",
+) -> list[dict[str, Any]]:
+    """Async news search using the tiered waterfall (NewsAPI → Tavily → DDG → RSS)."""
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(
+        None, _news_search_sync, query, max_results, freshness
+    )
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GENERAL WEB SEARCH — DuckDuckGo (unchanged for non-news queries)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _ddg_search_sync(
     query: str,
     max_results: int = 6,
-    news: bool = False,
     freshness: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Blocking DuckDuckGo search with a news-specific freshness path."""
+    """Blocking DuckDuckGo text search for general (non-news) queries."""
     try:
         from duckduckgo_search import DDGS
-
         with DDGS() as ddgs:
-            if news:
-                raw_results = list(
-                    ddgs.news(
-                        query,
-                        region="wt-wt",
-                        safesearch="moderate",
-                        timelimit=freshness,
-                        max_results=max_results,
-                    )
+            raw_results = list(
+                ddgs.text(
+                    query,
+                    region="wt-wt",
+                    safesearch="moderate",
+                    timelimit=freshness,
+                    max_results=max_results,
                 )
-            else:
-                raw_results = list(
-                    ddgs.text(
-                        query,
-                        region="wt-wt",
-                        safesearch="moderate",
-                        timelimit=freshness,
-                        max_results=max_results,
-                    )
-                )
-
+            )
         if not raw_results:
             raise ValueError("DuckDuckGo returned no results")
-
         return [
             {
                 "title": result.get("title", ""),
@@ -304,17 +518,16 @@ def _ddg_search_sync(
                 "snippet": result.get("body", ""),
                 "published_at": result.get("date", ""),
                 "source": result.get("source", ""),
+                "image_url": "",
             }
             for result in raw_results
         ]
     except Exception as exc:
         logger.warning("[search] DuckDuckGo failed: %s", exc)
         try:
-            if news:
-                return _google_news_rss_sync(query, max_results, freshness)
             return _bing_web_rss_sync(query, max_results)
         except Exception as fallback_exc:
-            logger.error("[search] Search fallback failed: %s", fallback_exc)
+            logger.error("[search] Bing RSS fallback failed: %s", fallback_exc)
             return []
 
 
@@ -325,20 +538,23 @@ async def web_search(
     news: bool = False,
     freshness: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search the web, optionally using a freshness-filtered news index."""
+    """
+    General web search via DuckDuckGo (non-news queries).
+    For news queries use news_search() instead.
+    The 'news' parameter is kept for backward-compatibility but is ignored
+    — callers should use news_search() directly for news.
+    """
     loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(
         None,
         _ddg_search_sync,
         query,
         max_results,
-        news,
         freshness,
     )
     logger.info(
-        "[search] query='%s' news=%s freshness=%s results=%d",
+        "[search] query='%s' freshness=%s results=%d",
         query,
-        news,
         freshness,
         len(results),
     )
@@ -346,7 +562,7 @@ async def web_search(
 
 
 def format_search_results(results: list[dict[str, Any]]) -> str:
-    """Format search results with freshness metadata for LLM grounding."""
+    """Format general web search results with freshness metadata for LLM grounding."""
     if not results:
         return "No web results found."
 
@@ -363,34 +579,60 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
 
 
 def format_news_results(results: list[dict[str, Any]], retrieved_date: str) -> str:
-    """Render fresh news directly so dates and source links are never lost."""
+    """
+    Render news cards in a rich format:
+      [IMAGE if available]
+      • bullet points from snippet
+      Source: publisher name  |  📅 date  |  [Read →](url)
+      ---
+    """
     if not results:
         return "No current news results found."
 
     lines = [
-        f"### 📰 Latest News",
+        "### 📰 Latest News",
         f"*Retrieved: {retrieved_date}*",
         "",
     ]
-    for result in results:
-        title = result.get('title', 'Untitled')
-        pub = result.get('published_at', '')
-        source = result.get('source', '')
-        snippet = result.get('snippet', '')
-        url = result.get('url', '')
 
+    for result in results:
+        title       = result.get("title", "Untitled")
+        pub         = result.get("published_at", "")
+        source      = result.get("source", "")
+        snippet     = result.get("snippet", "")
+        url         = result.get("url", "")
+        image_url   = result.get("image_url", "")
+
+        # ── Title ────────────────────────────────────────────────────────
         lines.append(f"#### {title}")
+
+        # ── Image (if available from NewsAPI) ────────────────────────────
+        if image_url:
+            lines.append(f"![{title}]({image_url})")
+            lines.append("")
+
+        # ── Snippet as bullet points ──────────────────────────────────────
+        if snippet:
+            # Split into sentences and show as bullets (max 3)
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", snippet.strip()) if s.strip()]
+            for sent in sentences[:3]:
+                lines.append(f"- {sent}")
+            lines.append("")
+
+        # ── Meta row: source | date | read link ──────────────────────────
         meta_parts = []
-        if pub:
-            meta_parts.append(f"📅 {pub}")
         if source:
-            meta_parts.append(f"🗞️ {source}")
+            meta_parts.append(f"🗞️ **{source}**")
+        if pub:
+            # Shorten ISO timestamps: 2024-06-26T12:00:00Z → 2024-06-26
+            short_pub = pub[:10] if len(pub) >= 10 else pub
+            meta_parts.append(f"📅 {short_pub}")
+        if url:
+            meta_parts.append(f"[Read article →]({url})")
+
         if meta_parts:
             lines.append(" · ".join(meta_parts))
-        if snippet:
-            lines.append(snippet)
-        if url:
-            lines.append(f"<small>[Read source →]({url})</small>")
+
         lines.extend(["", "---", ""])
 
     return "\n".join(lines).rstrip()

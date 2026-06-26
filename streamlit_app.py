@@ -638,6 +638,27 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                 if sources:
                     valid_sources = [s for s in sources if s.get("type") in ("web", "arxiv") and s.get("url")]
                     if valid_sources:
+                        # ── Show article images (news results from NewsAPI) ────────
+                        news_with_images = [
+                            s for s in valid_sources
+                            if s.get("image_url") and s.get("type") == "web"
+                        ]
+                        if news_with_images:
+                            st.markdown("---")
+                            cols = st.columns(min(len(news_with_images), 3))
+                            for col, s in zip(cols, news_with_images[:3]):
+                                with col:
+                                    try:
+                                        st.image(s["image_url"], use_container_width=True)
+                                    except Exception:
+                                        pass  # Skip broken images silently
+                                    st.markdown(
+                                        f"<small>**{s.get('title', '')[:60]}**<br>"
+                                        f"[Read →]({s['url']})</small>",
+                                        unsafe_allow_html=True,
+                                    )
+
+                        # ── Source link row ────────────────────────────────────────
                         source_lines = []
                         for i, s in enumerate(valid_sources[:5], 1):
                             title = s.get("title", f"Source {i}")[:60]
@@ -645,7 +666,8 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                             icon  = "📄" if s.get("type") == "arxiv" else "🔗"
                             if url:
                                 source_lines.append(f"{icon} [{i}. {title}]({url})")
-                        if source_lines:
+                        if source_lines and not news_with_images:
+                            # Only show plain text source list if no images were shown
                             st.markdown("\n\n---\n**Sources:** " + " · ".join(source_lines))
 
                 full_content = route_html + bot_reply

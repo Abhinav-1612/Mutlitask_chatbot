@@ -45,6 +45,7 @@ from app.config import settings
 from app.database.vector_db import similarity_search
 from app.tools.search import (
     web_search,
+    news_search,
     format_search_results,
     format_news_results,
     get_weather,
@@ -454,18 +455,36 @@ async def web_node(state: UniversalAgentState) -> dict:
     )
     current_date = datetime.now().astimezone().date().isoformat()
 
-    contextual_query = (
-        f"{previous_query}. Follow-up: {query}"
-        if is_news and previous_query and not is_news_query(query)
-        else query
-    )
-    search_query = contextual_query if is_news else query
-    results = await web_search(
-        search_query,
-        max_results=8,
-        news=is_news,
-        freshness="d" if is_news else None,
-    )
+    if is_news:
+        # Build a contextual query for follow-ups
+        contextual_query = (
+            f"{previous_query}. Follow-up: {query}"
+            if previous_query and not is_news_query(query)
+            else query
+        )
+        logs.append(_ts("web_node", "News query — using tiered news search (NewsAPI → Tavily → DDG)"))
+        results = await news_search(contextual_query, max_results=8, freshness="d")
+        answer = format_news_results(results, current_date)
+        sources = [
+            {
+                "type": "web",
+                "title": r["title"],
+                "url": r["url"],
+                "published_at": r.get("published_at", ""),
+                "image_url": r.get("image_url", ""),
+            }
+            for r in results if r.get("url")
+        ]
+        logs.append(_ts("web_node", f"News: {len(results)} articles retrieved."))
+        return {
+            "final_answer": answer,
+            "sources": sources,
+            "route_used": "web",
+            "logs": logs,
+        }
+
+    # ── General web search (DuckDuckGo) ──────────────────────────────────────
+    results = await web_search(query, max_results=8)
     formatted = format_search_results(results)
     sources = [
         {
@@ -473,6 +492,7 @@ async def web_node(state: UniversalAgentState) -> dict:
             "title": r["title"],
             "url": r["url"],
             "published_at": r.get("published_at", ""),
+            "image_url": "",
         }
         for r in results
     ]
@@ -485,16 +505,6 @@ async def web_node(state: UniversalAgentState) -> dict:
                 "Please try again in a moment."
             ),
             "sources": [],
-            "route_used": "web",
-            "logs": logs,
-        }
-
-    if is_news:
-        answer = format_news_results(results, current_date)
-        logs.append(_ts("web_node", f"Dated news response generated ({len(answer)} chars)."))
-        return {
-            "final_answer": answer,
-            "sources": sources,
             "route_used": "web",
             "logs": logs,
         }
