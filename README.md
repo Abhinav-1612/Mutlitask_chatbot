@@ -1,3 +1,11 @@
+---
+title: Omni Agent API
+emoji: 🤖
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+---
 # 🤖 Universal Omni-Agent (Research & Multi-Task Chatbot)
 
 A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **LangGraph**. This intelligent assistant routes your queries dynamically to specialized sub-agents, capable of performing real-time web searches, querying financial data, fetching weather, retrieving academic papers from ArXiv, and analyzing uploaded PDF documents using Retrieval-Augmented Generation (RAG).
