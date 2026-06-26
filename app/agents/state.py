@@ -58,6 +58,9 @@ class UniversalAgentState(TypedDict):
     logs: Annotated[list[str], operator.add]
     """Node transition log lines streamed via SSE."""
 
+    user_groq_key: str
+    """Optional Groq API key supplied by the user — overrides server key if set."""
+
 
 def initial_state(
     session_id: str,
@@ -65,6 +68,7 @@ def initial_state(
     history: list[dict] | None = None,
     uploaded_files: list[dict] | None = None,
     active_url: str | None = None,
+    user_groq_key: str = "",
 ) -> UniversalAgentState:
     """Build a clean initial state for a new graph invocation."""
     return UniversalAgentState(
@@ -78,5 +82,6 @@ def initial_state(
         rag_context=[],
         sources=[],
         final_answer="",
+        user_groq_key=user_groq_key or "",
         logs=[f"[graph] Session {session_id} — query: {query[:60]}..."],
     )

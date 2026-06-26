@@ -32,8 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.state import initial_state
 from app.database.sql_db import (
-    get_db, get_or_create_session, add_message, get_history
+    get_db, get_or_create_session, add_message, get_history, Session
 )
+from sqlalchemy import select, desc
 from app.graph import get_graph
 from app.models.schemas import (
     ChatRequest, ChatResponse, MessageOut, MessageRole, AgentRoute
@@ -104,6 +105,7 @@ async def chat(
         history=history,
         uploaded_files=[{"file_id": fid} for fid in request.file_ids],
         active_url=request.active_url,
+        user_groq_key=request.user_groq_key or "",
     )
 
     # ── Run LangGraph pipeline ────────────────────────────────────────────────
@@ -143,10 +145,11 @@ async def chat(
     summary="Stream agent logs and response via Server-Sent Events",
 )
 async def chat_stream(
-    session_id: str  = Query(default_factory=lambda: str(uuid.uuid4())),
-    message:    str  = Query(..., min_length=1),
-    file_ids:   str  = Query(default="", description="Comma-separated file IDs"),
-    active_url: str  = Query(default=""),
+    session_id:    str  = Query(default_factory=lambda: str(uuid.uuid4())),
+    message:       str  = Query(..., min_length=1),
+    file_ids:      str  = Query(default="", description="Comma-separated file IDs"),
+    active_url:    str  = Query(default=""),
+    user_groq_key: str  = Query(default="", description="Optional user Groq API key"),
     db: AsyncSession = Depends(get_db),
 ) -> EventSourceResponse:
     """
@@ -182,6 +185,7 @@ async def chat_stream(
                 history=history,
                 uploaded_files=[{"file_id": fid} for fid in file_id_list],
                 active_url=active_url or None,
+                user_groq_key=user_groq_key or "",
             )
 
             yield {
@@ -240,7 +244,7 @@ async def chat_stream(
                             }),
                         }
 
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
 
             answer     = complete_state.get("final_answer", "No response generated.")
             route_used = complete_state.get("route_used", "general")
@@ -302,9 +306,38 @@ async def clear_session(
     session_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Delete all messages for a session (keeps the session row)."""
+    """Delete a session and all its associated messages."""
     from sqlalchemy import delete
-    from app.database.sql_db import Message
-    await db.execute(delete(Message).where(Message.session_id == session_id))
-    logger.info("[chat] Cleared history for session: %s", session_id)
-    return {"message": f"Session '{session_id}' history cleared.", "session_id": session_id}
+    from app.database.sql_db import Session
+    await db.execute(delete(Session).where(Session.id == session_id))
+    logger.info("[chat] Deleted session: %s", session_id)
+    return {"message": f"Session '{session_id}' deleted.", "session_id": session_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /chat/sessions — Recent sessions list for sidebar
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/sessions",
+    summary="List recent chat sessions",
+)
+async def list_sessions(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Return the most recent *limit* sessions (id + title + updated_at)."""
+    result = await db.execute(
+        select(Session).order_by(desc(Session.updated_at)).limit(limit)
+    )
+    sessions = result.scalars().all()
+    return [
+        {
+            "id": s.id,
+            "title": s.title or "New Chat",
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        }
+        for s in sessions
+    ]
+

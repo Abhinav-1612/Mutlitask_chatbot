@@ -42,6 +42,28 @@ def is_news_query(query: str) -> bool:
     )
 
 
+def is_instagram_query(query: str) -> bool:
+    """Detect queries about Instagram news, trends, or viral content."""
+    has_instagram = _contains(query, (r"\binstagram\b", r"\binsta\b", r"\big\b"))
+    has_intent = _contains(
+        query,
+        (
+            r"\bnews\b",
+            r"\btrend(?:ing|s)?\b",
+            r"\bviral\b",
+            r"\bpost(?:s|ed)?\b",
+            r"\bstories?\b",
+            r"\breels?\b",
+            r"\blatest\b",
+            r"\bwhat(?:'s| is) (?:happening|trending|new)\b",
+            r"\bupdate\b",
+            r"\bhappening\b",
+        ),
+    )
+    # A standalone "instagram" question with no specific intent also qualifies
+    return has_instagram and (has_intent or len(query.split()) <= 4)
+
+
 def _is_stock_query(query: str) -> bool:
     return _contains(
         query,
@@ -53,6 +75,32 @@ def _is_stock_query(query: str) -> bool:
             r"\b52[- ]week\b",
             r"\b(?:price|quote) of [A-Z]{1,6}(?:\.[A-Z]{1,3})?\b",
             r"\b[A-Z]{1,6}(?:\.[A-Z]{1,3})? stock\b",
+        ),
+    )
+
+
+def is_cricket_score_query(query: str) -> bool:
+    """
+    Catches score/scorecard queries even without an explicit sport word.
+    Examples: "current score", "live score", "today's scorecard",
+              "what's the score", "show me the score", "match score".
+    """
+    # Direct cricket/IPL mentions always qualify
+    if _contains(query, (r"\bcricket\b", r"\bipl\b", r"\btest match\b", r"\bodi\b", r"\bt20\b")):
+        return True
+    # Score-intent phrases that strongly imply cricket in Indian context
+    return _contains(
+        query,
+        (
+            r"\bcurrent\s+score\b",
+            r"\blive\s+score\b",
+            r"\bscorecard\b",
+            r"\blive\s+(?:cricket\s+)?(?:match|game)\b",
+            r"\b(?:today'?s?|live|latest|current|ongoing)\s+(?:match|score)\b",
+            r"\bwhat(?:'s| is) the score\b",
+            r"\bshow\s+(?:me\s+)?(?:the\s+)?(?:live\s+)?scores?\b",
+            r"\bmatch\s+score\b",
+            r"\bcurrent\s+match\b",
         ),
     )
 
@@ -71,6 +119,11 @@ def _is_live_sports_query(query: str) -> bool:
             r"\bmlb\b",
             r"\bmatch\b",
             r"\bgame\b",
+            r"\btest match\b",
+            r"\bodi\b",
+            r"\bt20\b",
+            r"\bseries\b",
+            r"\btournament\b",
         ),
     )
     has_live_intent = _contains(
@@ -83,6 +136,8 @@ def _is_live_sports_query(query: str) -> bool:
             r"\bfixture\b",
             r"\bstandings?\b",
             r"\btoday\b",
+            r"\bcurrent\b",
+            r"\bongoing\b",
         ),
     )
     return has_sport and has_live_intent
@@ -200,10 +255,17 @@ def detect_priority_route(
     previous_query: str | None = None,
 ) -> AgentRoute | None:
     """Return a route only when the intent can be identified confidently."""
+    if is_instagram_query(query):
+        return "web"
+
     if is_weather_query(query) or is_news_query(query):
         return "web"
 
     if _is_stock_query(query):
+        return "finance"
+
+    # Cricket/live score — check dedicated helper first (broader catch)
+    if is_cricket_score_query(query):
         return "finance"
 
     if _is_live_sports_query(query):

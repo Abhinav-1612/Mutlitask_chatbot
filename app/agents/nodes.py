@@ -38,6 +38,8 @@ from app.agents.routing import (
     choose_route,
     is_news_query,
     is_weather_query,
+    is_instagram_query,
+    is_cricket_score_query,
 )
 from app.config import settings
 from app.database.vector_db import similarity_search
@@ -47,6 +49,8 @@ from app.tools.search import (
     format_news_results,
     get_weather,
     format_weather_result,
+    get_instagram_news,
+    format_instagram_results,
 )
 from app.tools.finance import (
     get_stock_price, format_stock_result,
@@ -56,22 +60,32 @@ from app.tools.arxiv_tool import search_arxiv, format_arxiv_results
 
 logger = logging.getLogger(__name__)
 
-# ── LLM instances ─────────────────────────────────────────────────────────────
-_groq_key = settings.groq_api_key
+# ── LLM factory — supports per-user Groq API keys ────────────────────────────
+_llm_cache: dict[str, tuple] = {}   # key → (llm_fast, llm_smart)
 
-llm_fast = ChatGroq(         # Llama 3.1-8b — routing & light tasks
-    model=settings.router_model,
-    api_key=_groq_key,
-    temperature=0.0,
-    max_tokens=512,
-)
-
-llm_smart = ChatGroq(        # Llama 3.3-70b — reasoning & synthesis
-    model=settings.agent_model,
-    api_key=_groq_key,
-    temperature=0.3,
-    max_tokens=2048,
-)
+def _get_llms(user_key: str = "") -> tuple:
+    """
+    Return (llm_fast, llm_smart) for the given API key.
+    Instances are cached per key so we don’t recreate on every token.
+    Falls back to the server’s GROQ_API_KEY if user_key is empty.
+    """
+    api_key = (user_key.strip() or settings.groq_api_key)
+    if api_key not in _llm_cache:
+        _llm_cache[api_key] = (
+            ChatGroq(
+                model=settings.router_model,
+                api_key=api_key,
+                temperature=0.0,
+                max_tokens=512,
+            ),
+            ChatGroq(
+                model=settings.agent_model,
+                api_key=api_key,
+                temperature=0.3,
+                max_tokens=2048,
+            ),
+        )
+    return _llm_cache[api_key]
 
 # ── Tools for general_node ────────────────────────────────────────────────────
 @tool
@@ -187,6 +201,7 @@ async def supervisor_node(state: UniversalAgentState) -> dict:
     query  = state["query"]
     route  = state["next_node"]
     logs   = [_ts("supervisor_node", f"Validating route '{route}' for: '{query[:50]}'")]
+    llm_fast, _ = _get_llms(state.get("user_groq_key", ""))
 
     # For finance queries, extract ticker symbols for yfinance
     if route == "finance":
@@ -219,6 +234,7 @@ async def general_node(state: UniversalAgentState) -> dict:
     """
     query = state["query"]
     logs  = [_ts("general_node", "Generating response...")]
+    _, llm_smart = _get_llms(state.get("user_groq_key", ""))
 
     history_ctx = _build_history_context(state.get("messages", []))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -293,6 +309,7 @@ async def rag_node(state: UniversalAgentState) -> dict:
     logs         = [_ts("rag_node", f"RAG retrieval for: '{query[:50]}'")]
     all_context  : list[str] = []
     all_sources  : list[dict] = []
+    _, llm_smart = _get_llms(state.get("user_groq_key", ""))
 
     # ── Qdrant semantic search ────────────────────────────────────────────────
     filter_by = None
@@ -359,6 +376,7 @@ async def web_node(state: UniversalAgentState) -> dict:
     query   = state["query"]
     logs    = [_ts("web_node", f"Web search: '{query[:50]}'")]
     previous_query = _last_user_message(state.get("messages", []))
+    llm_fast, llm_smart = _get_llms(state.get("user_groq_key", ""))
 
     # ── Weather check: use structured Open-Meteo data ─────────────────────────
     is_weather = is_weather_query(query) or bool(
@@ -394,6 +412,37 @@ async def web_node(state: UniversalAgentState) -> dict:
             "final_answer": answer,
             "sources":      sources,
             "route_used":   "web",
+            "logs":         logs,
+        }
+
+    # ── Instagram check ───────────────────────────────────────────────────────
+    if is_instagram_query(query):
+        logs.append(_ts("web_node", "Detected Instagram query — fetching news..."))
+        # Extract topic: strip instagram/insta from query to get the actual subject
+        topic = re.sub(
+            r"\b(?:instagram|insta|ig)\b",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        ).strip(" ,?.-")
+        topic = re.sub(
+            r"\b(?:news|trending|viral|posts?|reels?|stories|latest|update|what(?:'s)? (?:happening|new))\b",
+            "",
+            topic,
+            flags=re.IGNORECASE,
+        ).strip(" ,?.-")
+        current_date = datetime.now().astimezone().date().isoformat()
+        ig_results = await get_instagram_news(topic=topic, max_results=8)
+        answer = format_instagram_results(ig_results, topic, current_date)
+        sources = [
+            {"type": "web", "title": r["title"], "url": r["url"], "published_at": r.get("published_at", "")}
+            for r in ig_results if r.get("url")
+        ]
+        logs.append(_ts("web_node", f"Instagram: {len(ig_results)} results."))
+        return {
+            "final_answer": answer,
+            "sources":      sources,
+            "route_used":   "instagram",
             "logs":         logs,
         }
 
@@ -488,11 +537,14 @@ async def finance_node(state: UniversalAgentState) -> dict:
     logs    = [_ts("finance_node", f"Finance query: '{query[:50]}'")]
     sources = state.get("sources", [])
     answer  = ""
+    llm_fast, _ = _get_llms(state.get("user_groq_key", ""))
 
     # Determine if this is stock or sports
-    is_sports = any(w in query.lower() for w in [
-        "cricket", "ipl", "score", "match", "football", "soccer",
-        "test match", "odi", "t20", "live game"
+    # Detect sports/cricket — use the same helper as the router for consistency
+    _ql = query.lower()
+    is_sports = is_cricket_score_query(query) or any(w in _ql for w in [
+        "cricket", "ipl", "scorecard", "match", "football", "soccer",
+        "test match", "odi", "t20", "live game", "live score", "live match",
     ])
 
     if is_sports:

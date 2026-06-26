@@ -392,4 +392,149 @@ def format_news_results(results: list[dict[str, Any]], retrieved_date: str) -> s
         if url:
             lines.append(f"<small>[Read source →]({url})</small>")
         lines.extend(["", "---", ""])
+
+    return "\n".join(lines).rstrip()
+
+
+# ── Instagram News (targeted DuckDuckGo + Google News) ────────────────────────
+
+def _fetch_instagram_news_sync(
+    topic: str = "",
+    max_results: int = 8,
+) -> list[dict[str, Any]]:
+    """
+    Fetch Instagram-related news using a two-step approach:
+      1. Try Instagram's unofficial public tag page (no auth)
+      2. Targeted DuckDuckGo news search
+      3. Google News RSS fallback
+    Returns a list of result dicts consistent with web_search() format.
+    """
+    results: list[dict[str, Any]] = []
+
+    # ── Step 1: Try Instagram's unofficial public tag page ─────────────────────
+    try:
+        import json as _json
+        import urllib.request as _ureq
+
+        tag = re.sub(r"\s+", "", topic.lower().strip()) or "trending"
+        ig_url = f"https://www.instagram.com/explore/tags/{tag}/?__a=1&__d=dis"
+        req = _ureq.Request(
+            ig_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)",
+                "Accept": "application/json",
+            },
+        )
+        with _ureq.urlopen(req, timeout=6) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+
+        edges = (
+            data.get("graphql", {})
+                .get("hashtag", {})
+                .get("edge_hashtag_to_media", {})
+                .get("edges", [])
+        )
+        for edge in edges[:5]:
+            node = edge.get("node", {})
+            caption_edges = node.get("edge_media_to_caption", {}).get("edges", [])
+            caption = caption_edges[0]["node"]["text"][:300] if caption_edges else ""
+            shortcode = node.get("shortcode", "")
+            results.append({
+                "title": f"Instagram #{tag} post",
+                "url": f"https://www.instagram.com/p/{shortcode}/" if shortcode else ig_url,
+                "snippet": caption,
+                "published_at": "",
+                "source": "Instagram",
+            })
+        if results:
+            logger.info("[instagram] Tag page: %d results for '#%s'", len(results), tag)
+            return results[:max_results]
+    except Exception as exc:
+        logger.debug("[instagram] Tag page failed (expected): %s", exc)
+
+    # ── Step 2: DuckDuckGo news search ────────────────────────────────────────
+    try:
+        from duckduckgo_search import DDGS
+        queries = [
+            f"instagram {topic} trending" if topic else "instagram trending viral news today",
+            f"instagram {topic} latest" if topic else "instagram latest news today",
+        ]
+        seen_urls: set[str] = set()
+        with DDGS() as ddgs:
+            for q in queries:
+                for r in ddgs.news(
+                    q,
+                    region="wt-wt",
+                    safesearch="moderate",
+                    timelimit="d",
+                    max_results=max_results // 2 + 1,
+                ):
+                    url = r.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        results.append({
+                            "title": r.get("title", ""),
+                            "url": url,
+                            "snippet": r.get("body", ""),
+                            "published_at": r.get("date", ""),
+                            "source": r.get("source", ""),
+                        })
+        if results:
+            logger.info("[instagram] DuckDuckGo: %d results for '%s'", len(results), topic)
+            return results[:max_results]
+    except Exception as exc:
+        logger.warning("[instagram] DuckDuckGo news failed: %s", exc)
+
+    # ── Step 3: Google News RSS fallback ──────────────────────────────────────
+    try:
+        query = f"instagram {topic}" if topic else "instagram trending"
+        results = _google_news_rss_sync(query, max_results, freshness="d")
+        logger.info("[instagram] Google News RSS fallback: %d results", len(results))
+    except Exception as exc:
+        logger.error("[instagram] Google News RSS also failed: %s", exc)
+
+    return results
+
+
+async def get_instagram_news(topic: str = "", max_results: int = 8) -> list[dict[str, Any]]:
+    """Search for Instagram-related news and trending content via DuckDuckGo."""
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(
+        None, _fetch_instagram_news_sync, topic, max_results
+    )
+    return results
+
+
+def format_instagram_results(results: list[dict[str, Any]], topic: str, retrieved_date: str) -> str:
+    """Format Instagram news results as rich Markdown."""
+    if not results:
+        return f"📸 No recent Instagram news found for **{topic or 'trending topics'}**."
+
+    header_topic = f"#{topic}" if topic else "Trending"
+    lines = [
+        f"### 📸 Instagram News — {header_topic}",
+        f"*Retrieved: {retrieved_date} · via DuckDuckGo News*",
+        "",
+    ]
+    for r in results:
+        title   = r.get("title", "Post")
+        pub     = r.get("published_at", "")
+        source  = r.get("source", "")
+        snippet = r.get("snippet", "")
+        url     = r.get("url", "")
+
+        lines.append(f"#### {title}")
+        meta = []
+        if pub:
+            meta.append(f"📅 {pub}")
+        if source:
+            meta.append(f"📰 {source}")
+        if meta:
+            lines.append(" · ".join(meta))
+        if snippet:
+            lines.append(snippet[:300])
+        if url:
+            lines.append(f"<small>[Read more →]({url})</small>")
+        lines.extend(["", "---", ""])
+
     return "\n".join(lines).rstrip()

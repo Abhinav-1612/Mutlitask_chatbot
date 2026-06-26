@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     router_model: str = "llama-3.1-8b-instant"
     agent_model: str = "llama-3.3-70b-versatile"
 
+    # ── External API Keys ────────────────────────────────────────────────────
+    rapidapi_key: str = ""       # RapidAPI key for Cricbuzz cricket API (free tier)
+    cricapi_key: str = ""        # cricapi.com key (free tier at cricapi.com)
+
+
     # ── SQL Database ──────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./data/omni_agent.db"
 

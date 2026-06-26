@@ -37,10 +37,12 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000, description="User's message.")
     file_ids: list[str] = Field(default_factory=list, description="IDs of previously uploaded files.")
     active_url: str | None = Field(None, description="Optional URL for context.")
+    user_groq_key: str = Field(default="", description="Optional user-supplied Groq API key.")
 
     model_config = {"json_schema_extra": {"example": {
         "session_id": "abc123",
         "message": "What is the current Tesla stock price?",
+        "user_groq_key": "",
     }}}
 
 
