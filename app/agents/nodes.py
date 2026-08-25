@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import logging
 import re
+import asyncio
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Any
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from pydantic import BaseModel, Field
+
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 from langchain_core.tools import tool
 
 from langchain_groq import ChatGroq
@@ -65,15 +68,18 @@ logger = logging.getLogger(__name__)
 # ── LLM factory — supports per-user Groq API keys ────────────────────────────
 _llm_cache: dict[str, tuple] = {}   # key → (llm_fast, llm_smart)
 
-def _get_llms(user_key: str = "") -> tuple:
+def _get_llms(user_key: str = "", agent_model: str = "") -> tuple:
     """
-    Return (llm_fast, llm_smart) for the given API key.
-    Instances are cached per key so we don’t recreate on every token.
+    Return (llm_fast, llm_smart) for the given API key and model.
+    Instances are cached per key+model so we don’t recreate on every token.
     Falls back to the server’s GROQ_API_KEY if user_key is empty.
     """
     api_key = (user_key.strip() or settings.groq_api_key)
-    if api_key not in _llm_cache:
-        _llm_cache[api_key] = (
+    model_name = (agent_model.strip() or settings.agent_model)
+    cache_key = f"{api_key}_{model_name}"
+
+    if cache_key not in _llm_cache:
+        _llm_cache[cache_key] = (
             ChatGroq(
                 model=settings.router_model,
                 api_key=api_key,
@@ -81,34 +87,107 @@ def _get_llms(user_key: str = "") -> tuple:
                 max_tokens=512,
             ),
             ChatGroq(
-                model=settings.agent_model,
+                model=model_name,
                 api_key=api_key,
                 temperature=0.3,
                 max_tokens=2048,
             ),
         )
-    return _llm_cache[api_key]
+    return _llm_cache[cache_key]
 
-# ── Tools for general_node ────────────────────────────────────────────────────
-@tool
+# ── Tools for Omni-Agent ──────────────────────────────────────────────────────
+
+class WeatherInput(BaseModel):
+    location: str = Field(description="The exact name of the city, state, or country ONLY. Example: 'Nagpur' or 'Tokyo'.")
+
+@tool(args_schema=WeatherInput)
 async def tool_get_weather(location: str) -> str:
     """Get the current weather and 3-day forecast for any city or location."""
-    data = await get_weather(location)
-    return format_weather_result(data)
+    try:
+        data = await get_weather(location)
+        return format_weather_result(data)
+    except Exception as e:
+        return f"Weather Error: {str(e)}"
 
+class NewsInput(BaseModel):
+    topic_or_location: str = Field(description="The topic, city/location, or company to fetch today's news and top headlines for. Example: 'Mumbai', 'Microsoft', or 'Tesla'.")
 
-@tool
-async def tool_web_search(query: str) -> str:
-    """
-    Search the web for current news, recent events, or any real-time information.
-    Use this for: latest news, current events, trending topics, live scores, recent data.
-    Do NOT use for: general knowledge, math, history, definitions.
-    """
-    results = await web_search(query, max_results=6, news="news" in query.lower())
-    if not results:
-        return "No results found."
-    return format_search_results(results)
+@tool(args_schema=NewsInput)
+async def tool_search_news(topic_or_location: str) -> str:
+    """Fetch today's breaking news, top headlines, and current news articles for any city, country, company, or topic."""
+    try:
+        results = await news_search(topic_or_location, max_results=6, freshness="d")
+        return format_news_results(results, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    except Exception as e:
+        return f"News Error: {str(e)}"
 
+class WebSearchInput(BaseModel):
+    query: str = Field(description="The search query.")
+    news_intent: bool = Field(default=False, description="Set to true if looking for recent news or latest updates.")
+
+@tool(args_schema=WebSearchInput)
+async def tool_web_search(query: str, news_intent: bool = False) -> str:
+    """Search the web for general knowledge, information, websites, or current events."""
+    try:
+        if news_intent or is_news_query(query):
+            results = await news_search(query, max_results=6, freshness="d")
+            return format_news_results(results, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        else:
+            results = await web_search(query, max_results=6)
+            return format_search_results(results) if results else "No results found."
+    except Exception as e:
+        return f"Search Error: {str(e)}"
+
+class StockInput(BaseModel):
+    ticker_or_company: str = Field(description="The stock ticker symbol or company name. Example: 'TSLA', 'Tesla', 'AAPL', or 'RELIANCE.NS'.")
+
+@tool(args_schema=StockInput)
+async def tool_get_stock_price(ticker_or_company: str) -> str:
+    """Fetch live and historical stock data (current price, yesterday's exact closing price / previous close, change %, 52W range) for any company or ticker symbol."""
+    try:
+        from app.agents.nodes import _extract_clean_ticker
+        clean_ticker = _extract_clean_ticker(ticker_or_company, ticker_or_company) or ticker_or_company
+        data = await get_stock_price(clean_ticker)
+        return format_stock_result(data)
+    except Exception as e:
+        return f"Finance Error: {str(e)}"
+
+class CricketInput(BaseModel):
+    query: str = Field(description="The cricket match query (e.g., 'India live score', 'IPL today').")
+
+@tool(args_schema=CricketInput)
+async def tool_get_cricket_scores(query: str) -> str:
+    """Fetch live cricket scores and match updates."""
+    try:
+        data = await get_cricket_scores(query)
+        return format_cricket_result(data)
+    except Exception as e:
+        return f"Sports Error: {str(e)}"
+
+class ArxivInput(BaseModel):
+    query: str = Field(description="The research topic or paper title to search on arXiv.")
+
+@tool(args_schema=ArxivInput)
+async def tool_search_arxiv(query: str) -> str:
+    """Search for academic research papers on arXiv."""
+    try:
+        papers = await search_arxiv(query, max_results=3)
+        return format_arxiv_results(papers) if papers else "No papers found."
+    except Exception as e:
+        return f"ArXiv Error: {str(e)}"
+
+class MandiInput(BaseModel):
+    commodity: str = Field(description="The name of the crop or commodity (e.g., 'Soyabean', 'Wheat').")
+    state: str = Field(default="", description="The Indian state (e.g., 'Maharashtra'). Optional.")
+
+@tool(args_schema=MandiInput)
+async def tool_get_mandi_prices(commodity: str, state: str = "") -> str:
+    """Fetch live crop market (mandi) prices from AGMARKNET."""
+    try:
+        data = await get_mandi_prices(commodity, state=state, max_results=10)
+        return format_mandi_prices(data, commodity)
+    except Exception as e:
+        return f"Mandi Error: {str(e)}"
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
 def _ts(node: str, msg: str) -> str:
@@ -131,6 +210,144 @@ def _last_user_message(messages: list[dict]) -> str | None:
         if message.get("role") == "user":
             return message.get("content")
     return None
+
+
+def _clean_llm_response(text: str) -> str:
+    """Remove internal reasoning or thinking process artifacts from LLM response."""
+    if not text:
+        return ""
+    # 1. Remove <think>...</think> tags (case-insensitive)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 2. Remove any loose or unclosed <think> / </think> tags
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    
+    # 3. Strip thinking process text if present
+    if re.search(r"^(?:Here['’]?s (?:a )?thinking process|Thinking Process):", text, flags=re.IGNORECASE):
+        patterns = [
+            r"(?:\[Output Generation\]|Outputs? response|Final Answer:?|Output:?)\s*",
+            r"(?=\n\n(?:###|##|#|\*\*|Today|India|Sri Lanka|Match|🏏|📈))",
+        ]
+        for pat in patterns:
+            parts = re.split(pat, text, flags=re.IGNORECASE)
+            if len(parts) > 1:
+                text = parts[-1]
+                break
+        else:
+            match = re.search(r"(\n(?:###|##|#|\*\*|Today|India|Sri Lanka|Match|🏏|📈).*)", text, flags=re.DOTALL)
+            if match:
+                text = match.group(1)
+                
+    # 4. Remove search/citation artifacts like 【1†L1-L3】
+    text = re.sub(r"【.*?】", "", text)
+                
+    return text.strip()
+
+
+# Common company to ticker mapping for instantaneous, error-free resolution
+COMMON_TICKER_MAP = {
+    "TESLA": "TSLA",
+    "TSLA": "TSLA",
+    "APPLE": "AAPL",
+    "AAPL": "AAPL",
+    "MICROSOFT": "MSFT",
+    "MSFT": "MSFT",
+    "GOOGLE": "GOOGL",
+    "GOOGL": "GOOGL",
+    "GOOG": "GOOGL",
+    "ALPHABET": "GOOGL",
+    "AMAZON": "AMZN",
+    "AMZN": "AMZN",
+    "NVIDIA": "NVDA",
+    "NVDA": "NVDA",
+    "META": "META",
+    "FACEBOOK": "META",
+    "NETFLIX": "NFLX",
+    "NFLX": "NFLX",
+    "AMD": "AMD",
+    "INTEL": "INTC",
+    "INTC": "INTC",
+    "TSMC": "TSM",
+    "TSM": "TSM",
+    "RELIANCE": "RELIANCE.NS",
+    "TCS": "TCS.NS",
+    "INFOSYS": "INFY.NS",
+    "INFY": "INFY.NS",
+    "HDFC": "HDFCBANK.NS",
+    "HDFC BANK": "HDFCBANK.NS",
+    "ICICI": "ICICIBANK.NS",
+    "ICICI BANK": "ICICIBANK.NS",
+    "SBI": "SBIN.NS",
+    "STATE BANK OF INDIA": "SBIN.NS",
+    "TATA MOTORS": "TATAMOTORS.NS",
+    "TATA STEEL": "TATASTEEL.NS",
+    "WIPRO": "WIPRO.NS",
+    "ITC": "ITC.NS",
+    "BHARTI AIRTEL": "BHARTIARTL.NS",
+    "AIRTEL": "BHARTIARTL.NS",
+    "ADANI": "ADANIENT.NS",
+    "ZOMATO": "ZOMATO.NS",
+    "PAYTM": "PAYTM.NS",
+    "SWIGGY": "SWIGGY.NS",
+    "BTC": "BTC-USD",
+    "BITCOIN": "BTC-USD",
+    "ETH": "ETH-USD",
+    "ETHEREUM": "ETH-USD",
+}
+
+
+def _extract_clean_ticker(raw_text: str, query: str = "") -> str:
+    """Robustly extract and clean ticker symbol from LLM output or user query."""
+    # 1. First check if query directly mentions a known company
+    if query:
+        q_upper = query.upper()
+        for comp in sorted(COMMON_TICKER_MAP.keys(), key=len, reverse=True):
+            if re.search(rf"\b{re.escape(comp)}\b", q_upper):
+                return COMMON_TICKER_MAP[comp]
+
+    if not raw_text:
+        return ""
+
+    # 2. Clean thinking tags and reasoning artifacts
+    cleaned = _clean_llm_response(raw_text)
+
+    # 3. Check cleaned text against known company names
+    c_upper = cleaned.upper()
+    for comp in sorted(COMMON_TICKER_MAP.keys(), key=len, reverse=True):
+        if re.search(rf"\b{re.escape(comp)}\b", c_upper):
+            return COMMON_TICKER_MAP[comp]
+
+    # 4. Remove markdown / formatting noise
+    cleaned = re.sub(r"```[\w]*", "", cleaned)
+    cleaned = re.sub(r"[`\"'*_#:]", " ", cleaned)
+
+    # 5. Extract words and look for ticker candidates (e.g. AAPL, TSLA, RELIANCE.NS, BTC-USD, ^NSEI)
+    tokens = re.findall(r"[A-Za-z0-9.\-^]{1,12}", cleaned)
+    ignore_words = {
+        "THE", "TICKER", "SYMBOL", "FOR", "IS", "STOCK", "OF", "COMPANY", "REPLY",
+        "ONLY", "NONE", "PRICE", "QUOTE", "EXCHANGE", "NASDAQ", "NYSE", "BSE",
+        "NSE", "HERE", "WHAT", "CURRENT", "LIVE", "SHARE", "VALUE", "OUTPUT", "FINAL", "YES", "NO"
+    }
+
+    for token in tokens:
+        candidate = token.strip().upper()
+        if candidate and candidate not in ignore_words and not candidate.isdigit():
+            sanitized = re.sub(r"[^A-Z0-9.\-^]", "", candidate)
+            if sanitized and len(sanitized) <= 12 and sanitized != "NONE":
+                return sanitized
+
+    # 6. Fallback: extract uppercase ticker candidates directly from the query itself
+    if query:
+        q_cleaned = re.sub(r"[`\"'*_#:]", " ", query)
+        q_tokens = re.findall(r"\b[A-Za-z0-9.\-^]{1,12}\b", q_cleaned)
+        for token in q_tokens:
+            candidate = token.strip().upper()
+            if candidate and candidate not in ignore_words and not candidate.isdigit() and len(candidate) >= 2:
+                sanitized = re.sub(r"[^A-Z0-9.\-^]", "", candidate)
+                if sanitized and sanitized != "NONE":
+                    return sanitized
+
+    return ""
 
 
 def _extract_weather_location(query: str) -> str:
@@ -166,447 +383,140 @@ def _extract_weather_location(query: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NODE 1 — Gateway Router (Zero-Shot Guardrail)
+# NODE 1 — Omni Agent Node
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def gateway_router(state: UniversalAgentState) -> dict:
+async def agent_node(state: UniversalAgentState) -> dict:
     """
-    Route explicit tool intents deterministically.
-    Questions without a clear tool requirement go directly to general chat.
+    Omni-Agent that natively binds all tools and executes them in parallel if needed.
     """
     query = state["query"]
-    previous_query = _last_user_message(state.get("messages", []))
-    has_files = bool(state.get("uploaded_files"))
-    has_url   = bool(state.get("active_url"))
-    logs      = [_ts("gateway_router", f"Classifying query: '{query[:60]}...'")]
+    logs  = [_ts("agent_node", "Processing query...")]
+    _, llm_smart = _get_llms(state.get("user_groq_key", ""), state.get("agent_model", ""))
+    
+    uploaded = state.get("uploaded_files", [])
+    
+    # ── Dynamically define Qdrant tool if files are uploaded
+    @tool
+    async def tool_search_document(search_query: str) -> str:
+        """Search the currently uploaded PDF document for context."""
+        if not uploaded:
+            return "No document is currently uploaded."
+        try:
+            file_ids = [f["file_id"] for f in uploaded if "file_id" in f]
+            filter_by = {"file_id": file_ids[0]} if file_ids else None
+            hits = similarity_search(search_query, top_k=5, filter_payload=filter_by)
+            if not hits:
+                return "No relevant information found in the document."
+            return "\n\n---\n\n".join(hit["content"] for hit in hits)
+        except Exception as e:
+            return f"Document Search Error: {str(e)}"
 
-    route = choose_route(
-        query,
-        has_files=has_files,
-        has_url=has_url,
-        previous_query=previous_query,
-    )
-    reason = "explicit tool intent" if route != "general" else "no tool required"
-    logs.append(_ts("gateway_router", f"Route decision: {route.upper()} ({reason})"))
-    return {"next_node": route, "route_used": route, "logs": logs}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NODE 2 — Supervisor Agent (Central Orchestrator)
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def supervisor_node(state: UniversalAgentState) -> dict:
-    """
-    Secondary validation layer. Re-evaluates routing with broader context.
-    Can refine: web → rag (if docs are relevant), finance → web (no ticker found).
-    """
-    query  = state["query"]
-    route  = state["next_node"]
-    logs   = [_ts("supervisor_node", f"Validating route '{route}' for: '{query[:50]}'")]
-    llm_fast, _ = _get_llms(state.get("user_groq_key", ""))
-
-    # For finance queries, extract ticker symbols for yfinance
-    if route == "finance":
-        ticker_prompt = (
-            f"Extract the stock ticker symbol from this query (e.g. AAPL, TSLA, RELIANCE.NS). "
-            f"Reply with ONLY the ticker or 'NONE' if this is about sports/scores.\n\nQuery: {query}"
-        )
-        resp = await llm_fast.ainvoke([HumanMessage(content=ticker_prompt)])
-        ticker = resp.content.strip().upper()
-        if ticker != "NONE" and len(ticker) <= 12:
-            logs.append(_ts("supervisor_node", f"Extracted ticker: {ticker}"))
-            return {
-                "logs": logs,
-                "sources": [{"type": "ticker", "value": ticker}],
-            }
-
-    logs.append(_ts("supervisor_node", f"Route confirmed: {route.upper()}"))
-    return {"logs": logs}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NODE 3 — General Conversation Node
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def general_node(state: UniversalAgentState) -> dict:
-    """
-    Conversational LLM with optional tool access.
-    The model decides whether to use tools (weather/search) or answer directly.
-    Basic/timeless questions are answered directly; real-time queries use tools.
-    """
-    query = state["query"]
-    logs  = [_ts("general_node", "Generating response...")]
-    _, llm_smart = _get_llms(state.get("user_groq_key", ""))
-
-    history_ctx = _build_history_context(state.get("messages", []))
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-    system = (
-        "You are Omni-Agent, a helpful, friendly, and knowledgeable AI assistant. "
-        f"Today's date and time (UTC): {now}. "
-        "TOOL USAGE RULES — follow these strictly:\n"
-        "  • Call tool_get_weather ONLY when the user asks about current/live weather or temperature for a specific place.\n"
-        "  • Call tool_web_search ONLY when the user asks about: latest news, current events, recent scores, live data, or anything that changes day-to-day.\n"
-        "  • Do NOT call any tool for: greetings, math, definitions, history, general knowledge, or questions you already know the answer to.\n"
-        "  • If the user's question is about news for a specific place (e.g. 'news in Delhi'), search for '<place> latest news today'.\n"
-        "Respond clearly and concisely with Markdown formatting where helpful. "
-        "Never make up facts — if uncertain, say so."
-    )
-
-    _tools = [tool_get_weather, tool_web_search]
+    _tools = [
+        tool_get_weather, tool_search_news, tool_web_search, tool_get_stock_price, 
+        tool_get_cricket_scores, tool_search_arxiv, tool_get_mandi_prices,
+        tool_search_document
+    ]
     llm_with_tools = llm_smart.bind_tools(_tools)
 
-    messages = [
-        SystemMessage(content=system),
-        HumanMessage(content=f"Conversation history:\n{history_ctx}\n\nUser: {query}"),
-    ]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    
+    system_prompt = (
+        "You are Omni-Agent, a top-tier AI assistant with real-time tool access.\n"
+        f"Today's date and time (UTC): {now}.\n\n"
+        "MANDATORY MULTI-INTENT TOOL CALLING RULES:\n"
+        "1. Check the user's prompt for ALL questions and intents. If the user asks about multiple topics (e.g. stock price, weather, news), you MUST call ALL corresponding tools in parallel in the FIRST turn!\n"
+        "2. FOR NEWS / HEADLINES / CURRENT EVENTS / BREAKING UPDATES: ALWAYS call `tool_search_news`. DO NOT call web search for news.\n"
+        "3. FOR STOCKS / TICKERS / MARKET / CLOSING PRICES: ALWAYS call `tool_get_stock_price`. DO NOT call web search for stocks.\n"
+        "4. FOR WEATHER / TEMPERATURE / FORECAST: ALWAYS call `tool_get_weather`. DO NOT call web search for weather.\n"
+        "5. FOR CRICKET / LIVE SCORES: ALWAYS call `tool_get_cricket_scores`.\n"
+        "6. FOR GENERAL WEBSITES / SEARCH: Call `tool_web_search`.\n"
+        "7. FOR UPLOADED DOCUMENTS: Call `tool_search_document`.\n\n"
+        "CRITICAL COMPLETION & SYNTHESIS RULES:\n"
+        "• Assume all tool results provided in the conversation are the latest and sufficient available data. NEVER perform repeated or redundant searches for the same topic.\n"
+        "• Always provide a comprehensive, complete summary covering all key facts, numbers, and takeaways.\n"
+        "• DOCUMENT SUMMARIES & RESUMES: Format sections using clean Markdown subheadings (###) and bulleted lists. Avoid cramming large multiline text or multi-item lists into Markdown table cells with raw `<br>` tags.\n"
+        "• CLEAN MARKDOWN ONLY: Never output raw HTML tags like `<br>`, `<span>`, `<div>`, `<b>`, `<p>` in text responses. Use clean, native Markdown formatting.\n"
+        "• For news / web articles: Present all key headlines and summaries. Cite sources with clickable Markdown links using their real URLs (e.g. `[NDTV](https://...)` or `[Read Article →](https://...)`) whenever URLs are present in the tool output. If a story does not have a direct URL, summarize the news naturally without refusing to answer.\n"
+        "• For stocks, report the company name, current price, yesterday's closing price (previous close), change %, and 52W range.\n"
+        "• For weather, report current temperature, conditions, humidity, wind, and forecast.\n"
+        "• NEVER output raw unformatted search results or raw URL dumps."
+    )
 
-    response = await llm_with_tools.ainvoke(messages)
+    # Reconstruct history
+    history = state.get("messages", [])
+    langchain_messages = [SystemMessage(content=system_prompt)]
+    
+    for msg in history:
+        if msg.get("role") == "user":
+            langchain_messages.append(HumanMessage(content=msg.get("content", "")))
+        elif msg.get("role") == "assistant":
+            langchain_messages.append(AIMessage(content=msg.get("content", "")))
+    
+    langchain_messages.append(HumanMessage(content=query))
+    
+    route_used = "general" # Default, updated if tools are called
 
-    # ── Handle tool calls ──────────────────────────────────────────────────────
+    # ── Tool Execution Loop ──────────────────────────────────────────────────────
     max_rounds = 3
-    for _ in range(max_rounds):
+    for round_idx in range(max_rounds):
+        response = await llm_with_tools.ainvoke(langchain_messages)
+        
         if not response.tool_calls:
+            langchain_messages.append(response)
             break
-
-        messages.append(response)
+            
+        langchain_messages.append(response)
+        
+        tasks = []
         for tc in response.tool_calls:
             name = tc["name"]
             args = tc["args"]
-            logs.append(_ts("general_node", f"Tool call: {name}({args})"))
-            try:
-                if name == "tool_get_weather":
-                    result = await tool_get_weather.ainvoke(args)
-                elif name == "tool_web_search":
-                    result = await tool_web_search.ainvoke(args)
-                else:
-                    result = f"Unknown tool: {name}"
-            except Exception as exc:
-                result = f"Tool error: {exc}"
-                logger.error("[general_node] Tool %s failed: %s", name, exc)
+            logs.append(_ts("agent_node", f"Tool call: {name}({args})"))
+            
+            # Map tool name to function
+            tool_func = None
+            for t in _tools:
+                if t.name == name:
+                    tool_func = t
+                    break
+                    
+            if tool_func:
+                tasks.append((tc["id"], name, tool_func.ainvoke(args)))
+            else:
+                async def err_func(n): return f"Unknown tool: {n}"
+                tasks.append((tc["id"], name, err_func(name)))
+                
+        # Execute all tools concurrently in parallel
+        results = await asyncio.gather(*(t[2] for t in tasks), return_exceptions=True)
+        
+        for i, (tc_id, name, result) in enumerate(zip((t[0] for t in tasks), (t[1] for t in tasks), results)):
+            if isinstance(result, Exception):
+                logger.error("[agent_node] Tool %s failed: %s", name, result)
+                result = f"Tool execution failed: {str(result)}"
+                
+            langchain_messages.append(ToolMessage(content=str(result), tool_call_id=tc_id))
+            
+            # Update route_used for UI flair (prioritize document/rag before general search)
+            if "document" in name or "arxiv" in name or "rag" in name or "pdf" in name:
+                route_used = "rag"
+            elif "stock" in name or "cricket" in name or "finance" in name:
+                route_used = "finance"
+            elif "weather" in name or "search" in name or "news" in name or "web" in name:
+                route_used = "web"
+                
+    # If the loop ended after executing tools without a final text response, invoke once more for synthesis
+    if isinstance(langchain_messages[-1], ToolMessage) or not getattr(langchain_messages[-1], "content", "").strip():
+        langchain_messages.append(HumanMessage(content="You have gathered all needed information from tools. Now synthesize and write the complete final response addressing every part of the original request in clean Markdown. Do NOT call any more tools."))
+        final_response = await llm_with_tools.ainvoke(langchain_messages)
+        langchain_messages.append(final_response)
 
-            messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+    final_response = langchain_messages[-1]
+    answer = _clean_llm_response(final_response.content if hasattr(final_response, "content") else "")
+    logs.append(_ts("agent_node", f"Response ready ({len(answer)} chars)."))
+    
+    return {"final_answer": answer, "route_used": route_used, "logs": logs}
 
-        response = await llm_with_tools.ainvoke(messages)
-
-    answer = response.content.strip()
-    logs.append(_ts("general_node", f"Response ready ({len(answer)} chars)."))
-    return {"final_answer": answer, "route_used": "general", "logs": logs}
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NODE 4 — RAG & Research Node
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def rag_node(state: UniversalAgentState) -> dict:
-    """
-    Retrieval-Augmented Generation:
-    1. Search Qdrant for relevant chunks (from uploaded docs / past ingestion)
-    2. If query mentions ArXiv / research papers → also search ArXiv
-    3. Synthesise grounded answer with inline citations
-    """
-    query        = state["query"]
-    uploaded     = state.get("uploaded_files", [])
-    logs         = [_ts("rag_node", f"RAG retrieval for: '{query[:50]}'")]
-    all_context  : list[str] = []
-    all_sources  : list[dict] = []
-    _, llm_smart = _get_llms(state.get("user_groq_key", ""))
-
-    # ── Qdrant semantic search ────────────────────────────────────────────────
-    filter_by = None
-    if uploaded:
-        # Filter to only the user's uploaded file IDs if provided
-        file_ids = [f["file_id"] for f in uploaded if "file_id" in f]
-        if file_ids:
-            filter_by = {"file_id": file_ids[0]}  # primary file
-
-    qdrant_hits = similarity_search(query, top_k=5, filter_payload=filter_by)
-    for hit in qdrant_hits:
-        all_context.append(hit["content"])
-        all_sources.append({"type": "document", "score": hit["score"],
-                             "file": hit.get("filename", "uploaded doc")})
-    logs.append(_ts("rag_node", f"Qdrant → {len(qdrant_hits)} chunks retrieved."))
-
-    # ── ArXiv search for research queries ─────────────────────────────────────
-    research_keywords = ["paper", "research", "arxiv", "study", "survey", "model", "algorithm"]
-    if any(kw in query.lower() for kw in research_keywords):
-        papers = await search_arxiv(query, max_results=3)
-        for p in papers:
-            all_context.append(f"[ArXiv] {p['title']}: {p['abstract']}")
-            all_sources.append({"type": "arxiv", "title": p["title"],
-                                "url": p["pdf_url"], "year": p["year"]})
-        logs.append(_ts("rag_node", f"ArXiv → {len(papers)} papers added."))
-
-    # ── LLM synthesis ─────────────────────────────────────────────────────────
-    context_block = "\n\n---\n\n".join(all_context[:8]) if all_context else "No relevant context found."
-
-    system = (
-        "You are a precise research assistant. Answer the user's question using ONLY "
-        "the provided context. Cite sources as [Doc 1], [Doc 2] etc. "
-        "If the context doesn't contain the answer, say so clearly. "
-        "Use Markdown formatting with headers and bullet points where appropriate. "
-        "Be thorough and detailed in your answer."
-    )
-    user_prompt = f"CONTEXT:\n{context_block[:6000]}\n\nQUESTION: {query}"
-
-    response = await llm_smart.ainvoke([
-        SystemMessage(content=system),
-        HumanMessage(content=user_prompt),
-    ])
-
-    answer = response.content.strip()
-    logs.append(_ts("rag_node", f"RAG answer generated ({len(answer)} chars)."))
-    return {
-        "final_answer": answer,
-        "rag_context":  all_context,
-        "sources":      all_sources,
-        "route_used":   "rag",
-        "logs":         logs,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NODE 5 — Web & Search Node
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def web_node(state: UniversalAgentState) -> dict:
-    """
-    Performs DuckDuckGo search and synthesises a grounded answer.
-    Handles: news queries, weather, general web research.
-    """
-    query   = state["query"]
-    logs    = [_ts("web_node", f"Web search: '{query[:50]}'")]
-    previous_query = _last_user_message(state.get("messages", []))
-    llm_fast, llm_smart = _get_llms(state.get("user_groq_key", ""))
-
-    # ── Weather check: use structured Open-Meteo data ─────────────────────────
-    is_weather = is_weather_query(query) or bool(
-        previous_query
-        and is_weather_query(previous_query)
-        and len(query.split()) <= 10
-    )
-
-    if is_weather:
-        logs.append(_ts("web_node", "Detected weather query — fetching live data..."))
-        location = _extract_weather_location(query)
-        if not location:
-            loc_resp = await llm_fast.ainvoke([HumanMessage(
-                content=(
-                    "Extract ONLY the city/location name from this weather query. "
-                    f"Reply with ONLY the location name.\nQuery: {query}"
-                )
-            )])
-            location = loc_resp.content.strip()
-        logs.append(_ts("web_node", f"Fetching weather for: {location}"))
-        weather_data = await get_weather(location)
-        answer = format_weather_result(weather_data)
-        weather_source = weather_data.get("source") or {}
-        sources = []
-        if weather_source.get("weather_url"):
-            sources.append({
-                "type": "web",
-                "title": "Open-Meteo live weather",
-                "url": weather_source["weather_url"],
-            })
-        logs.append(_ts("web_node", f"Weather response generated."))
-        return {
-            "final_answer": answer,
-            "sources":      sources,
-            "route_used":   "web",
-            "logs":         logs,
-        }
-
-    # ── Instagram check ───────────────────────────────────────────────────────
-    if is_instagram_query(query):
-        logs.append(_ts("web_node", "Detected Instagram query — fetching news..."))
-        # Extract topic: strip instagram/insta from query to get the actual subject
-        topic = re.sub(
-            r"\b(?:instagram|insta|ig)\b",
-            "",
-            query,
-            flags=re.IGNORECASE,
-        ).strip(" ,?.-")
-        topic = re.sub(
-            r"\b(?:news|trending|viral|posts?|reels?|stories|latest|update|what(?:'s)? (?:happening|new))\b",
-            "",
-            topic,
-            flags=re.IGNORECASE,
-        ).strip(" ,?.-")
-        current_date = datetime.now().astimezone().date().isoformat()
-        ig_results = await get_instagram_news(topic=topic, max_results=8)
-        answer = format_instagram_results(ig_results, topic, current_date)
-        sources = [
-            {"type": "web", "title": r["title"], "url": r["url"], "published_at": r.get("published_at", "")}
-            for r in ig_results if r.get("url")
-        ]
-        logs.append(_ts("web_node", f"Instagram: {len(ig_results)} results."))
-        return {
-            "final_answer": answer,
-            "sources":      sources,
-            "route_used":   "instagram",
-            "logs":         logs,
-        }
-
-    # ── News check ────────────────────────────────────────────────────────────
-    is_news = is_news_query(query) or bool(
-        previous_query
-        and is_news_query(previous_query)
-        and len(query.split()) <= 10
-    )
-    current_date = datetime.now().astimezone().date().isoformat()
-
-    if is_news:
-        # Build a contextual query for follow-ups
-        contextual_query = (
-            f"{previous_query}. Follow-up: {query}"
-            if previous_query and not is_news_query(query)
-            else query
-        )
-        logs.append(_ts("web_node", "News query — using tiered news search (NewsAPI → Tavily → DDG)"))
-        results = await news_search(contextual_query, max_results=8, freshness="d")
-        answer = format_news_results(results, current_date)
-        sources = [
-            {
-                "type": "web",
-                "title": r["title"],
-                "url": r["url"],
-                "published_at": r.get("published_at", ""),
-                "image_url": r.get("image_url", ""),
-                "snippet": r.get("snippet", ""),
-                "source": r.get("source", ""),
-                "category": r.get("category", "news"),
-            }
-            for r in results if r.get("url")
-        ]
-        logs.append(_ts("web_node", f"News: {len(results)} articles retrieved."))
-        return {
-            "final_answer": answer,
-            "sources": sources,
-            "route_used": "web",
-            "logs": logs,
-        }
-
-    # ── General web search (DuckDuckGo) ──────────────────────────────────────
-    results = await web_search(query, max_results=8)
-    formatted = format_search_results(results)
-    sources = [
-        {
-            "type": "web",
-            "title": r["title"],
-            "url": r["url"],
-            "published_at": r.get("published_at", ""),
-            "image_url": "",
-        }
-        for r in results
-    ]
-    logs.append(_ts("web_node", f"Found {len(results)} web results."))
-
-    if not results:
-        return {
-            "final_answer": (
-                "I could not retrieve live web results right now. "
-                "Please try again in a moment."
-            ),
-            "sources": [],
-            "route_used": "web",
-            "logs": logs,
-        }
-
-    system = (
-        "You are a web research assistant. Synthesise the web search results below "
-        "into a clear, accurate, well-structured answer. "
-        f"The current local date is {current_date}. Prefer the newest reliable result. "
-        "Include relevant URLs as markdown links. Do not hallucinate facts. "
-        "Use headers, bullet points and markdown formatting where appropriate."
-    )
-
-    user_prompt = f"SEARCH RESULTS:\n{formatted}\n\nQUESTION: {query}"
-
-    response = await llm_smart.ainvoke([
-        SystemMessage(content=system),
-        HumanMessage(content=user_prompt),
-    ])
-
-    answer = response.content.strip()
-    logs.append(_ts("web_node", f"Web answer generated ({len(answer)} chars)."))
-    return {
-        "final_answer": answer,
-        "sources":      sources,
-        "route_used":   "web",
-        "logs":         logs,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NODE 6 — Finance & Live API Node
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def finance_node(state: UniversalAgentState) -> dict:
-    """
-    Handles stock prices and live sports scores.
-    Ticker is pre-extracted by supervisor_node if available.
-    """
-    query   = state["query"]
-    logs    = [_ts("finance_node", f"Finance query: '{query[:50]}'")]
-    sources = state.get("sources", [])
-    answer  = ""
-    llm_fast, _ = _get_llms(state.get("user_groq_key", ""))
-
-    # Determine if this is stock or sports
-    # Detect sports/cricket — use the same helper as the router for consistency
-    _ql = query.lower()
-    is_sports = is_cricket_score_query(query) or any(w in _ql for w in [
-        "cricket", "ipl", "scorecard", "match", "football", "soccer",
-        "test match", "odi", "t20", "live game", "live score", "live match",
-    ])
-
-    if is_sports:
-        logs.append(_ts("finance_node", "Fetching live cricket scores..."))
-        data   = await get_cricket_scores(query=query)
-        answer = format_cricket_result(data)
-        sources.append({"type": "sports", "source": "cricapi.com"})
-    else:
-        # Extract ticker from pre-computed sources or re-extract
-        ticker = None
-        for s in sources:
-            if s.get("type") == "ticker":
-                ticker = s["value"]
-                break
-
-        if not ticker:
-            # Fallback extraction
-            resp = await llm_fast.ainvoke([HumanMessage(
-                content=f"What is the stock ticker symbol in this query? Reply ONLY the ticker.\nQuery: {query}"
-            )])
-            ticker = resp.content.strip().upper()
-
-        logs.append(_ts("finance_node", f"Fetching stock data for: {ticker}"))
-        stock_data = await get_stock_price(ticker)
-        answer     = format_stock_result(stock_data)
-        sources.append({"type": "stock", "ticker": ticker, "source": "yfinance"})
-
-    # Enrich with LLM commentary
-    enrichment = await llm_fast.ainvoke([
-        SystemMessage(content="Add a brief 1-2 sentence financial insight or context to this data. Be concise."),
-        HumanMessage(content=f"Data:\n{answer}\n\nOriginal question: {query}"),
-    ])
-    answer += f"\n\n> **💡 Insight**: {enrichment.content.strip()}"
-
-    logs.append(_ts("finance_node", "Finance response complete."))
-    return {
-        "final_answer": answer,
-        "sources":      sources,
-        "route_used":   "finance",
-        "logs":         logs,
-    }
-
-
-
-# ##1. NewsAPI (primary)   → 200 req/day, returns images + text
-# 2. Tavily (fallback)   → kicks in when NewsAPI quota is hit
-# 3. DuckDuckGo (backup) → last resort if Tavily also fails
-# 4. Google News RSS     → final safety net
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NODE 7 — Farmer Node (Specialized Agriculture Assistant)
@@ -621,7 +531,7 @@ async def farmer_node(state: UniversalAgentState) -> dict:
     logs = state.get("logs", [])
     sources = state.get("sources", [])
     logs.append(_ts("farmer_node", f"Farmer query: '{query[:50]}'"))
-    llm_fast, llm_smart = _get_llms(state.get("user_groq_key", ""))
+    llm_fast, llm_smart = _get_llms(state.get("user_groq_key", ""), state.get("agent_model", ""))
 
     current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %A")
     
@@ -740,7 +650,7 @@ async def farmer_node(state: UniversalAgentState) -> dict:
 
     response = await llm_smart.ainvoke(messages_to_send)
 
-    answer = response.content.strip()
+    answer = _clean_llm_response(response.content)
     logs.append(_ts("farmer_node", "Farmer response complete."))
     
     return {

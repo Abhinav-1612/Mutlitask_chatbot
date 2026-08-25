@@ -18,7 +18,7 @@ A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **L
 
 ## ✨ Features
 
-- **🧠 Intelligent Routing**: Automatically routes questions to the appropriate tool (General Chat, RAG, Web Search, or Finance) using a zero-shot Llama 3.1-8b router.
+- **🧠 Intelligent Routing**: Automatically routes questions to the appropriate tool (General Chat, RAG, Web Search, or Finance) using a zero-shot qwen3.6-27b router.
 - **📚 RAG & Document Analysis**: Upload PDFs and instantly chat with your documents. Powered by **Pinecone** for lightning-fast semantic vector search and **FastEmbed** for efficient embeddings without heavy dependencies like PyTorch.
 - **📄 ArXiv Research Integration**: Ask about academic topics and instantly retrieve detailed abstracts and PDF links directly from ArXiv.
 - **🌐 Real-Time Web Search**: Uses DuckDuckGo to search the live internet for recent news and general queries.
@@ -31,7 +31,7 @@ A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **L
 
 - **Frontend**: Streamlit
 - **Backend API**: FastAPI (Python)
-- **AI Models**: Groq (Llama 3.3-70b for reasoning, Llama 3.1-8b for routing)
+- **AI Models**: Groq (gpt-oss-120b for reasoning, qwen3.6-27b for routing)
 - **Agent Orchestration**: LangChain & LangGraph
 - **Vector Database**: Pinecone (Serverless Cloud Vector DB)
 - **Embeddings**: FastEmbed (ONNX, lightweight, fast)
@@ -106,7 +106,7 @@ The UI will be accessible at `http://localhost:8501`.
    - `web_node`: Scrapes duckduckgo and Open-Meteo.
    - `finance_node`: Retrieves stock data (via direct chart API) and live cricket scores.
    - `rag_node`: Performs Pinecone similarity searches and ArXiv retrievals.
-   - `general_node`: Direct conversational Llama 3.3-70b interacting with basic tools.
+   - `general_node`: Direct conversational gpt-oss-120b interacting with basic tools.
 
 ## 🤝 Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the issues page.

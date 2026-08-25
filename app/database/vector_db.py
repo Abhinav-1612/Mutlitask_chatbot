@@ -8,65 +8,71 @@ Index: omni-agent-docs
 Vector size: 384  (BAAI/bge-small-en-v1.5)
 Distance: Cosine
 """
+#This file manages the vector database for RAG. 
+# It converts document text into embeddings using FastEmbed and stores those embeddings
+#  inside Pinecone. During chat, it performs semantic similarity search to 
+# retrieve the most relevant document chunks.
+
+
 from __future__ import annotations
 
 import logging
 import os
 from typing import Any
 
-from fastembed import TextEmbedding
-from pinecone import Pinecone, ServerlessSpec
+from fastembed import TextEmbedding  # creates embedding 
+from pinecone import Pinecone, ServerlessSpec # pinecone is vector store database 
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # ── Embedder singleton ────────────────────────────────────────────────────────
-_embedder: TextEmbedding | None = None
+_embedder: TextEmbedding | None = None # load model only once 
 
 
-def get_embedder() -> TextEmbedding:
+def get_embedder() -> TextEmbedding: # load fast embedd model 
     global _embedder
     if _embedder is None:
         logger.info("[vector_db] Loading fastembed model: %s", settings.embedding_model)
         os.makedirs(settings.fastembed_cache_dir, exist_ok=True)
-        _embedder = TextEmbedding(
+        _embedder = TextEmbedding( # load BAAI /bge model
             model_name=settings.embedding_model,
-            cache_dir=settings.fastembed_cache_dir,
+            cache_dir=settings.fastembed_cache_dir, # store downlaoded model next time no download  
         )
         logger.info("[vector_db] Embedding model ready.")
     return _embedder
 
-
+# converts many text to vectors 
 def embed(texts: list[str]) -> list[list[float]]:
     """Embed a batch of texts. Returns list of float vectors."""
     model = get_embedder()
     return [v.tolist() for v in model.embed(texts)]
 
-
+# for one senetence converting to vector 
 def embed_one(text: str) -> list[float]:
     """Embed a single string."""
     return embed([text])[0]
 
 
 # ── Pinecone client singleton ─────────────────────────────────────────────────
-_pc: Pinecone | None = None
+_pc: Pinecone | None = None #store pineconne client 
 _index: Any | None = None
 
 
-def get_pinecone() -> Pinecone:
+def get_pinecone() -> Pinecone: # conncct to pineconne
     global _pc
     if _pc is None:
         api_key = settings.pinecone_api_key
-        if not api_key:
+        if not api_key: # error if no api 
             logger.warning("[vector_db] PINECONE_API_KEY is not set.")
         logger.info("[vector_db] Connecting to Pinecone...")
         _pc = Pinecone(api_key=api_key)
         _ensure_index(_pc)
     return _pc
 
-
-def _ensure_index(pc: Pinecone) -> None:
+# cehcks if index esist if not create one 
+def _ensure_index(pc: Pinecone) -> None: 
     global _index
     index_name = settings.pinecone_index
     existing_indexes = [index.name for index in pc.list_indexes()]
@@ -76,25 +82,25 @@ def _ensure_index(pc: Pinecone) -> None:
         pc.create_index(
             name=index_name,
             dimension=settings.embedding_dim,
-            metric="cosine",
+            metric="cosine", # use cosine similarity for text embeding 
             spec=ServerlessSpec(cloud="aws", region="us-east-1") # adjust region as needed
         )
         logger.info("[vector_db] Index '%s' created.", index_name)
     else:
         logger.debug("[vector_db] Index '%s' already exists.", index_name)
     
-    _index = pc.Index(index_name)
+    _index = pc.Index(index_name) # connect to index 
 
 
-def get_index() -> Any:
+def get_index() -> Any: # return exist index 
     if _index is None:
         get_pinecone()
     return _index
 
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────
-
-def upsert_chunks(
+# if no chunks then return nothinng 
+def upsert_chunks( 
     chunks: list[str],
     metadata: list[dict[str, Any]],
     id_prefix: str = "doc",
@@ -114,9 +120,9 @@ def upsert_chunks(
         return 0
 
     index = get_index()
-    vectors = embed(chunks)
+    vectors = embed(chunks)  # convert chunk text to vector embedding
 
-    vectors_to_upsert = [
+    vectors_to_upsert = [ # each vector store embedding metadata and original text 
         {
             "id": f"{id_prefix}_{i}_{abs(hash(chunk[:40])) % (2**31)}",
             "values": vec,
@@ -125,9 +131,9 @@ def upsert_chunks(
         for i, (chunk, vec, meta) in enumerate(zip(chunks, vectors, metadata))
     ]
 
-    index.upsert(vectors=vectors_to_upsert)
+    index.upsert(vectors=vectors_to_upsert) # store vector to pineconne
     logger.info("[vector_db] Upserted %d chunks (prefix=%s).", len(vectors_to_upsert), id_prefix)
-    return len(vectors_to_upsert)
+    return len(vectors_to_upsert) # return no stored 
 
 
 def similarity_search(
@@ -147,23 +153,23 @@ def similarity_search(
         List of {score, content, **metadata} dicts, sorted by relevance.
     """
     index = get_index()
-    query_vec = embed_one(query)
+    query_vec = embed_one(query) # query to vec 
 
     pinecone_filter = None
     if filter_payload:
         key, val = next(iter(filter_payload.items()))
         pinecone_filter = {key: {"$eq": val}}
 
-    response = index.query(
+    response = index.query( # search query in pinecoone 
         vector=query_vec,
-        top_k=top_k,
-        filter=pinecone_filter,
+        top_k=top_k, #return top k =5
+        filter=pinecone_filter, # to search only in 1 pdf
         include_metadata=True,
     )
 
     results = []
     for match in response.matches:
-        if match.score < 0.3:
+        if match.score < 0.3: # ignore that bad match 
             continue
         metadata = match.metadata or {}
         content = metadata.pop("content", "")
@@ -174,4 +180,10 @@ def similarity_search(
         })
 
     logger.info("[vector_db] similarity_search → %d results for query '%s...'", len(results), query[:40])
-    return results
+    return results #finally return score , content and metadata 
+
+
+
+# SQLite stores structured data, such as chat sessions, user messages, timestamps, and titles.
+
+# Pinecone stores vector embeddings, which enable semantic search. SQL databases are not designed for fast nearest-neighbor vector search.

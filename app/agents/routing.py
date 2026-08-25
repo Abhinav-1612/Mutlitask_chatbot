@@ -1,17 +1,20 @@
 """Deterministic routing rules for high-confidence agent intents."""
 from __future__ import annotations
 
-import re
+import re#Used for Regex (Regular Expressions).
 from typing import Literal
 
 AgentRoute = Literal["general", "rag", "web", "finance"]
 
-
+# Very important helper.
+# Checks whether
+# the query contains
+# any regex pattern.
 def _contains(query: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, query, flags=re.IGNORECASE) for pattern in patterns)
 
 
-def is_weather_query(query: str) -> bool:
+def is_weather_query(query: str) -> bool: #returns true if matches the below words
     return _contains(
         query,
         (
@@ -68,13 +71,16 @@ def _is_stock_query(query: str) -> bool:
     return _contains(
         query,
         (
-            r"\bstock (?:price|quote|value|performance)\b",
-            r"\bshare (?:price|quote|value)\b",
+            r"\bstock\b",
+            r"\bstocks\b",
+            r"\bshare (?:price|quote|value|prices?)\b",
+            r"\bshares?\b",
             r"\bticker\b",
             r"\bmarket cap\b",
             r"\b52[- ]week\b",
-            r"\b(?:price|quote) of [A-Z]{1,6}(?:\.[A-Z]{1,3})?\b",
-            r"\b[A-Z]{1,6}(?:\.[A-Z]{1,3})? stock\b",
+            r"\b(?:price|quote) of [A-Za-z0-9.\-]{1,10}\b",
+            r"\b[A-Za-z0-9.\-]{1,10} (?:stock|share|ticker)\b",
+            r"\b(?:nasdaq|nyse|bse|nse|nifty|sensex)\b",
         ),
     )
 
@@ -101,6 +107,8 @@ def is_cricket_score_query(query: str) -> bool:
             r"\bshow\s+(?:me\s+)?(?:the\s+)?(?:live\s+)?scores?\b",
             r"\bmatch\s+score\b",
             r"\bcurrent\s+match\b",
+            r"\b(?:ind|india|sl|sri\s*lanka|aus|australia|pak|pakistan|eng|england|nz|sa|wi|ban|afg)\s+score\b",
+            r"\bscore\s+of\s+(?:ind|india|sl|sri\s*lanka|aus|australia|pak|pakistan|eng|england|nz|sa|wi|ban|afg)\b",
         ),
     )
 
@@ -249,7 +257,7 @@ def is_context_followup(query: str) -> bool:
     )
 
 
-def detect_priority_route(
+def detect_priority_route( #return whic node returnsans
     query: str,
     *,
     has_files: bool = False,
@@ -290,7 +298,7 @@ def detect_priority_route(
     return None
 
 
-def choose_route(
+def choose_route( #final check for route
     query: str,
     *,
     has_files: bool = False,
@@ -313,4 +321,9 @@ def choose_route(
         return "rag"
 
     return "general"
+
+    #outing.py contains deterministic routing logic using regular expressions. 
+    # It quickly detects high-confidence intents such as weather, news, stock prices,
+    #  cricket scores, documents, and web searches without calling an LLM. 
+    # This improves routing speed, reduces API costs, and makes classification more reliable.
 

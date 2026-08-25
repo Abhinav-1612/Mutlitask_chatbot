@@ -420,6 +420,57 @@ def _fetch_tavily_news_sync(
     return results
 
 
+def _fetch_tavily_general_sync(
+    query: str,
+    max_results: int = 8,
+) -> list[dict[str, Any]]:
+    """
+    Fallback general search source: Tavily search API with topic='general'.
+    """
+    from app.config import settings
+
+    api_key = settings.tavily_api_key.strip()
+    if not api_key:
+        raise ValueError("TAVILY_API_KEY not configured")
+
+    payload = json.dumps({
+        "api_key": api_key,
+        "query": query,
+        "topic": "general",
+        "search_depth": "basic",
+        "max_results": max_results,
+        "include_answer": False,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "Omni-Agent/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        raw_results = data.get("results", [])
+        results = [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": _clean_snippet(r.get("content", "")),
+                "published_at": r.get("published_date", ""),
+                "source": urllib.parse.urlparse(r.get("url", "")).netloc,
+                "image_url": "",
+            }
+            for r in raw_results
+        ]
+        logger.info("[tavily_general] query='%s' → %d results", query, len(results))
+        return results
+    except Exception as exc:
+        logger.warning("[tavily_general] failed: %s", exc)
+        return []
+
+
 def _fetch_ddg_news_sync(
     query: str,
     max_results: int = 8,
@@ -495,6 +546,21 @@ def _fetch_currents_api_sync(
     return results
 
 
+def clean_news_query(raw_query: str) -> str:
+    """Sanitize conversational user query into a clean, keyword-focused news search query."""
+    cleaned = re.sub(
+        r"\b(?:provide|tell me|give me|show me|what is|what's|can you give|summarize|summary|todays?|today's|today|latest|recent|current|breaking|top|daily|roundup|digest|news|headlines?|updates?|about|of|for|the|in)\b",
+        " ",
+        raw_query,
+        flags=re.IGNORECASE
+    )
+    cleaned = re.sub(r"['’]s\b", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,?.!")
+    if not cleaned:
+        cleaned = raw_query.strip()
+    return f"{cleaned} news" if not cleaned.lower().endswith("news") else cleaned
+
+
 def _news_search_sync(
     query: str,
     max_results: int = 8,
@@ -502,27 +568,31 @@ def _news_search_sync(
 ) -> list[dict[str, Any]]:
     """
     Tiered news search:
-      1. Currents API (primary — excellent for global news)
-      2. NewsAPI (fallback — has images)
-      3. Tavily  (fallback — when quota hit)
-      4. DuckDuckGo news (last resort)
-      5. Google News RSS (final safety net)
+      1. Currents API (primary — excellent for global/national news)
+      2. NewsAPI (fallback)
+      3. Tavily news (fallback)
+      4. DuckDuckGo news (fallback)
+      5. Google News RSS (safety net with freshness='d')
+      6. Google News RSS (safety net with freshness=None for smaller cities/regions)
+      7. General web search (final fallback)
     """
+    cleaned_query = clean_news_query(query)
+    
     # 1. Try Currents API
     try:
-        results = _fetch_currents_api_sync(query, max_results)
-        if results:
+        results = _fetch_currents_api_sync(cleaned_query, max_results)
+        if len(results) >= 3:
             return results
-        logger.info("[news] Currents API returned 0 results — trying NewsAPI")
+        logger.info("[news] Currents API returned <3 results — trying NewsAPI")
     except Exception as exc:
         logger.warning("[news] Currents API failed (%s) — falling back to NewsAPI", exc)
 
     # 2. Try NewsAPI
     try:
-        results = _fetch_newsapi_sync(query, max_results, freshness)
-        if results:
+        results = _fetch_newsapi_sync(cleaned_query, max_results, freshness)
+        if len(results) >= 3:
             return results
-        logger.info("[news] NewsAPI returned 0 results — trying Tavily")
+        logger.info("[news] NewsAPI returned <3 results — trying Tavily")
     except NewsAPIQuotaExceeded as exc:
         logger.warning("[news] NewsAPI quota exceeded (%s) — falling back to Tavily", exc)
     except Exception as exc:
@@ -530,24 +600,43 @@ def _news_search_sync(
 
     # 3. Try Tavily
     try:
-        results = _fetch_tavily_news_sync(query, max_results)
-        if results:
+        results = _fetch_tavily_news_sync(cleaned_query, max_results)
+        if len(results) >= 3:
             return results
-        logger.info("[news] Tavily returned 0 results — trying DuckDuckGo")
+        logger.info("[news] Tavily returned <3 results — trying DuckDuckGo")
     except Exception as exc:
         logger.warning("[news] Tavily failed (%s) — falling back to DuckDuckGo", exc)
 
-    # 3. Try DuckDuckGo news
-    results = _fetch_ddg_news_sync(query, max_results, freshness)
-    if results:
+    # 4. Try DuckDuckGo news
+    results = _fetch_ddg_news_sync(cleaned_query, max_results, freshness)
+    if len(results) >= 3:
         return results
 
-    # 4. Google News RSS (final safety net)
+    # 5. Google News RSS (with freshness 'd')
     try:
-        return _google_news_rss_sync(query, max_results, freshness)
+        results = _google_news_rss_sync(cleaned_query, max_results, freshness)
+        if len(results) >= 3:
+            return results
+    except Exception as exc:
+        logger.warning("[news] Google News RSS (d) failed: %s", exc)
+
+    # 6. Google News RSS (without restrictive 1d filter so any city like Varanasi gets local headlines)
+    try:
+        results = _google_news_rss_sync(cleaned_query, max_results, freshness=None)
+        if results:
+            return results
+    except Exception as exc:
+        logger.warning("[news] Google News RSS (all) failed: %s", exc)
+
+    # 7. General Web search fallback for "{city} news"
+    try:
+        results = _ddg_search_sync(cleaned_query, max_results)
+        if results:
+            return results
     except Exception as exc:
         logger.error("[news] All news sources failed. Last error: %s", exc)
-        return []
+
+    return []
 
 
 async def news_search(
@@ -615,12 +704,25 @@ async def web_search(
     freshness: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    General web search via DuckDuckGo (non-news queries).
-    For news queries use news_search() instead.
-    The 'news' parameter is kept for backward-compatibility but is ignored
-    — callers should use news_search() directly for news.
+    General web search via Tavily with a DuckDuckGo fallback.
     """
     loop = asyncio.get_running_loop()
+    
+    # 1. Try Tavily general search first
+    try:
+        results = await loop.run_in_executor(
+            None,
+            _fetch_tavily_general_sync,
+            query,
+            max_results,
+        )
+        if results:
+            logger.info("[search] query='%s' fetched via Tavily general", query)
+            return results
+    except Exception as exc:
+        logger.warning("[search] Tavily general failed (%s) — falling back to DDG", exc)
+
+    # 2. Fallback to DuckDuckGo search
     results = await loop.run_in_executor(
         None,
         _ddg_search_sync,
@@ -629,7 +731,7 @@ async def web_search(
         freshness,
     )
     logger.info(
-        "[search] query='%s' freshness=%s results=%d",
+        "[search] query='%s' freshness=%s fetched via DDG fallback, results=%d",
         query,
         freshness,
         len(results),
@@ -670,11 +772,6 @@ def format_news_results(results: list[dict[str, Any]], retrieved_date: str) -> s
     ]
 
     for result in results:
-        # If the article has an image, Streamlit renders it as a beautiful HTML card.
-        # Skip it here so we don't repeat the text redundantly!
-        if result.get("image_url"):
-            continue
-
         title       = result.get("title", "Untitled")
         pub         = result.get("published_at", "")
         source      = result.get("source", "")

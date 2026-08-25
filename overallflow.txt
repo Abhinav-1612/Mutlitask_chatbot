@@ -1,0 +1,245 @@
+                   User
+                     │
+                     ▼
+             FastAPI Server
+                     │
+                     ▼
+               Chat API (/chat)
+                     │
+                     ▼
+          Validate Request (schemas.py)
+                     │
+                     ▼
+        Load Chat History (sql_db.py)
+                     │
+                     ▼
+      Create Initial State (state.py)
+                     │
+                     ▼
+         Execute LangGraph (graph.py)
+                     │
+                     ▼
+           Gateway Router (nodes.py)
+                     │
+       ┌─────────────┴─────────────┐
+       ▼                           ▼
+ General Query                Tool Query
+       │                           │
+       ▼                           ▼
+ General Agent             Supervisor Node
+                                   │
+          ┌──────────────┬──────────┴─────────────┐
+          ▼              ▼                        ▼
+      RAG Agent      Web Agent             Finance Agent
+          │              │                        │
+          │              │                        │
+      Pinecone      Search APIs          Finance APIs
+          │              │                        │
+          └──────────────┴──────────────┬─────────┘
+                                        ▼
+                                 Final Response
+                                        │
+                                        ▼
+                           Save History (SQLite)
+                                        │
+                                        ▼
+                            ChatResponse → User
+
+
+
+
+
+
+
+     EX:1--- 
+                        USER
+                          │
+                          │
+         "What is the weather in Delhi today?"
+                          │
+                          ▼
+                 app/main.py
+          (FastAPI receives request)
+                          │
+                          ▼
+               app/api/chat.py
+      POST /chat endpoint is executed
+                          │
+                          ▼
+             models/schemas.py
+      ChatRequest validates input
+                          │
+                          ▼
+           database/sql_db.py
+             get_history()
+    Loads previous chat messages
+                          │
+                          ▼
+             agents/state.py
+          initial_state()
+Creates UniversalAgentState
+
+{
+ query = "Weather in Delhi",
+ history = [...],
+ next_node = "general",
+ final_answer = ""
+}
+
+                          │
+                          ▼
+                 graph.py
+             get_graph()
+                          │
+                          ▼
+               START Node
+                          │
+                          ▼
+           route_start()
+Farmer mode?
+
+No
+                          │
+                          ▼
+         gateway_router() (nodes.py)
+                          │
+                          ▼
+         routing.py
+      choose_route(query)
+                          │
+                          ▼
+Regex detects
+
+Weather
+
+↓
+
+returns
+
+"web"
+
+                          │
+                          ▼
+State Updated
+
+state["next_node"]="web"
+
+                          │
+                          ▼
+graph.py
+
+Gateway
+
+↓
+
+Supervisor
+
+                          │
+                          ▼
+supervisor_node()
+
+Reads
+
+state["next_node"]
+
+↓
+
+Calls
+
+web_node()
+
+(nodes.py)
+
+                          │
+                          ▼
+web_node()
+
+Calls
+
+tools/search.py
+
+↓
+
+get_weather()
+
+                          │
+                          ▼
+Weather API
+
+↓
+
+Returns
+
+29°C
+
+Humidity 55%
+
+                          │
+                          ▼
+search.py
+
+Formats result
+
+                          │
+                          ▼
+Groq LLM
+
+Creates natural answer
+
+↓
+
+"Today's temperature in Delhi is 29°C."
+
+                          │
+                          ▼
+State Updated
+
+state["final_answer"]
+
+state["sources"]
+
+                          │
+                          ▼
+graph.py
+
+END
+
+                          │
+                          ▼
+chat.py
+
+Receives final_state
+
+                          │
+                          ▼
+sql_db.py
+
+add_message()
+
+Stores
+
+User Question
+
+Bot Reply
+
+                          │
+                          ▼
+schemas.py
+
+ChatResponse
+
+↓
+
+{
+ reply,
+
+ route_used="web"
+}
+
+                          │
+                          ▼
+Frontend
+
+↓
+
+User

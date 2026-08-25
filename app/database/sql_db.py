@@ -9,28 +9,34 @@ Tables:
   sessions  — one row per chat session (id, title, created_at)
   messages  — conversation turns (session_id FK, role, content, ts)
 """
+
+# This file manages the SQL database of my chatbot using SQLAlchemy Async ORM. It creates chat sessions, 
+# stores conversation history, retrieves previous messages, and initializes the SQLite database automatically 
+# when the application starts.
+
+
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from sqlalchemy import (
-    Column, DateTime, ForeignKey, Integer, String, Text, event, select
+from sqlalchemy import (  # used to create database tables 
+    Column, DateTime, ForeignKey, Integer, String, Text, event, select, Boolean
 )
-from sqlalchemy.ext.asyncio import (
+from sqlalchemy.ext.asyncio import (   # make db operations asyn so fast api handles many users together 
     AsyncSession, async_sessionmaker, create_async_engine
 )
-from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.orm import DeclarativeBase, relationship # every table must inherit from base 
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # ── Engine & Session Factory ──────────────────────────────────────────────────
-_is_sqlite = settings.database_url.startswith("sqlite")
+_is_sqlite = settings.database_url.startswith("sqlite") # checks are we using sqlite 
 
-engine = create_async_engine(
+engine = create_async_engine( # ceate connection to db 
     settings.database_url,
     echo=settings.debug,        # logs all SQL in debug mode
     future=True,
@@ -43,7 +49,7 @@ engine = create_async_engine(
 
 
 if _is_sqlite:
-    @event.listens_for(engine.sync_engine, "connect")
+    @event.listens_for(engine.sync_engine, "connect")  # runs automatically when connec to db 
     def _configure_sqlite(dbapi_connection, _connection_record) -> None:
         """Allow readers and short writes to coexist during streamed requests."""
         cursor = dbapi_connection.cursor()
@@ -76,6 +82,7 @@ class Session(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
+    is_pinned  = Column(Boolean, default=False)
 
     messages   = relationship("Message", back_populates="session",
                               cascade="all, delete-orphan", lazy="select")
@@ -100,6 +107,14 @@ async def init_db() -> None:
     """Create all tables if they don't exist (called on app startup)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Migrate existing database to add is_pinned
+        from sqlalchemy import text
+        try:
+            await conn.execute(text("ALTER TABLE sessions ADD COLUMN is_pinned BOOLEAN DEFAULT 0"))
+        except Exception:
+            pass # Column already exists
+            
     logger.info("[sql_db] Tables initialised at: %s", settings.database_url)
 
 
@@ -145,6 +160,10 @@ async def add_message(
     """Append a message to a session's history."""
     msg = Message(session_id=session_id, role=role, content=content)
     db.add(msg)
+    
+    session = await get_or_create_session(db, session_id)
+    session.updated_at = datetime.now(timezone.utc)
+    
     await db.flush()
     return msg
 

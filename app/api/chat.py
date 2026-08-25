@@ -1,3 +1,7 @@
+#it connects FastAPI → LangGraph → Database → Response.
+#chat.py contains all chat-related APIs. 
+# It receives the user's message, loads chat history, invokes the LangGraph multi-agent workflow, stores the conversation in SQLite, and returns the final response. 
+# It also supports streaming responses using Server-Sent Events (SSE).
 """
 app/api/chat.py — Step 5: Chat Endpoints
 =========================================
@@ -19,58 +23,57 @@ DELETE /chat/session/{session_id}
 """
 from __future__ import annotations
 
-import asyncio
-import json
+import asyncio #Used for asynchronous programming.
+import json #Converts Python objects into JSON.
 import logging
-import uuid
+import uuid#Generates unique Session IDs.
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import AsyncIterator  #Used in streaming. 
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sse_starlette.sse import EventSourceResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.agents.state import initial_state
-from app.database.sql_db import (
+from fastapi import APIRouter, Depends, HTTPException, Query  # api router ceates chat api Instead of putting everything inside main.py  we create differentfiles and import from there.
+#depends used for database connection and many more   
+from sse_starlette.sse import EventSourceResponse #straem responses instead of waiting 
+from sqlalchemy.ext.asyncio import AsyncSession  #Async Database Connection.
+ 
+from app.agents.state import initial_state #Creates LangGraph state.
+from app.database.sql_db import ( # dtabase connection for chat history 
     get_db, get_or_create_session, add_message, get_history, Session
 )
-from sqlalchemy import select, desc
-from app.graph import get_graph
-from app.models.schemas import (
+from sqlalchemy import select, desc 
+from app.graph import get_graph#Returns compiled LangGraph.
+from app.models.schemas import ( #loading schemas for request and response data 
     ChatRequest, ChatResponse, MessageOut, MessageRole, AgentRoute
 )
 
-logger = logging.getLogger(__name__)
-router = APIRouter()
+logger = logging.getLogger(__name__) #create logger 
+router = APIRouter() #create chat router for chat apis 
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _history_to_dicts(messages) -> list[dict]:
+def _history_to_dicts(messages) -> list[dict]:  #converting sql databse oRM type objects and converting them to dictionary as langgraph wants dictionary 
     """Convert ORM Message objects to plain dicts for LangGraph state."""
     return [{"role": m.role, "content": m.content} for m in messages]
 
 
-def _history_to_out(messages) -> list[MessageOut]:
+def _history_to_out(messages) -> list[MessageOut]: # converts database objects to pydantic objects before returning response 
     """Convert ORM Message objects to Pydantic output schema."""
     return [
         MessageOut(role=MessageRole(m.role), content=m.content, created_at=m.created_at)
         for m in messages
     ]
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+#============================================
 # POST /chat — Standard (blocking) endpoint
-# ══════════════════════════════════════════════════════════════════════════════
 
-@router.post(
+@router.post( #create post chat api 
     "/",
-    response_model=ChatResponse,
+    response_model=ChatResponse, #response must match to chat response schema
     summary="Send a message and get a complete response",
 )
-async def chat(
-    request: ChatRequest,
-    db: AsyncSession = Depends(get_db),
+async def chat( # main chat function
+    request: ChatRequest, # recieves chat request 
+    db: AsyncSession = Depends(get_db), # depends on sql databse connection 
 ) -> ChatResponse:
     """
     Run the full multi-agent pipeline for a user message.
@@ -80,53 +83,56 @@ async def chat(
     - Saves user + assistant turns to SQLite
     - Returns final answer with sources and route metadata
     """
-    session_id = request.session_id or str(uuid.uuid4())
+    session_id = request.session_id or str(uuid.uuid4()) #Uses existing session. if not creates new one
     logger.info("[chat] POST session=%s message='%s...'", session_id, request.message[:40])
 
     # ── Ensure session exists in SQL ──────────────────────────────────────────
-    session = await get_or_create_session(db, session_id)
+    session = await get_or_create_session(db, session_id) # if not ceates new session 
 
     # ── Load history ──────────────────────────────────────────────────────────
-    history_orm = await get_history(db, session_id, limit=20)
-    history     = _history_to_dicts(history_orm)
+    history_orm = await get_history(db, session_id, limit=20) #Loads previous messages.
+    history     = _history_to_dicts(history_orm) # converts to dict format 
     
-    if not history:
-        session.title = request.message[:40] + ("..." if len(request.message) > 40 else "")
-        db.add(session)
-        await db.flush()
+    if not history: # means it it first msg we store title of the chat 
+        session.title = request.message[:40] + ("..." if len(request.message) > 40 else "") # take first 40 chars as title 
+        
+    session.updated_at = datetime.now(timezone.utc)
+    db.add(session) # add session 
+    await db.flush() # saves changes in db 
 
     # Release any session/title write lock before slow LLM and tool calls.
-    await db.commit()
+    await db.commit() # save title 
 
     # ── Build initial state ────────────────────────────────────────────────────
-    state = initial_state(
+    state = initial_state( # creates langgraph state 
         session_id=session_id,
         query=request.message,
         history=history,
         uploaded_files=[{"file_id": fid} for fid in request.file_ids],
         active_url=request.active_url,
         user_groq_key=request.user_groq_key or "",
+        agent_model=request.agent_model,
         farmer_mode=request.farmer_mode,
     )
 
     # ── Run LangGraph pipeline ────────────────────────────────────────────────
-    graph = get_graph()
+    graph = get_graph() # Return compiled LangGraph.
     try:
-        final_state = await graph.ainvoke(state)
+        final_state = await graph.ainvoke(state) # run the workflow 
     except Exception as exc:
         logger.error("[chat] Pipeline error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Agent pipeline failed: {exc}")
 
-    answer     = final_state.get("final_answer", "I'm sorry, I couldn't generate a response.")
-    route_used = final_state.get("route_used", "general")
-    sources    = final_state.get("sources", [])
+    answer     = final_state.get("final_answer", "I'm sorry, I couldn't generate a response.") # read the answer 
+    route_used = final_state.get("route_used", "general") # reads which agent answered 
+    sources    = final_state.get("sources", []) # gets sources used by agent
 
-    # ── Save messages to SQL ──────────────────────────────────────────────────
-    await add_message(db, session_id, "user",      request.message)
-    await add_message(db, session_id, "assistant", answer)
+    # ── Save messages to SQLite ──────────────────────────────────────────────────
+    await add_message(db, session_id, "user",      request.message) # adds user msg to db 
+    await add_message(db, session_id, "assistant", answer) # adds assistant msg to db
 
     # ── Reload history for response ───────────────────────────────────────────
-    updated_history = await get_history(db, session_id, limit=10)
+    updated_history = await get_history(db, session_id, limit=10) # load latest conversation 
 
     return ChatResponse(
         session_id=session_id,
@@ -137,21 +143,22 @@ async def chat(
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# =========================================
 # GET /chat/stream — SSE Streaming endpoint
-# ══════════════════════════════════════════════════════════════════════════════
+# 
 
 @router.get(
-    "/stream",
+    "/stream", # streaming api 
     summary="Stream agent logs and response via Server-Sent Events",
 )
 async def chat_stream(
     session_id:    str  = Query(default_factory=lambda: str(uuid.uuid4())),
-    message:       str  = Query(..., min_length=1),
-    file_ids:      str  = Query(default="", description="Comma-separated file IDs"),
+    message:       str  = Query(..., min_length=1), # user question
+    file_ids:      str  = Query(default="", description="Comma-separated file IDs"), # uploaded pofs
     active_url:    str  = Query(default=""),
     user_groq_key: str  = Query(default="", description="Optional user Groq API key"),
-    farmer_mode:   bool = Query(default=False, description="Toggle Farmer Mode"),
+    agent_model:   str  = Query(default="openai/gpt-oss-120b", description="Model for the agent"),
+    farmer_mode:   bool = Query(default=False, description="Toggle Farmer Mode"), # on or off
     db: AsyncSession = Depends(get_db),
 ) -> EventSourceResponse:
     """
@@ -167,16 +174,18 @@ async def chat_stream(
     """
     file_id_list = [f.strip() for f in file_ids.split(",") if f.strip()]
 
-    async def event_generator() -> AsyncIterator[dict]:
+    async def event_generator() -> AsyncIterator[dict]: # creates  SSE  stream
         try:
-            session = await get_or_create_session(db, session_id)
-            history_orm = await get_history(db, session_id, limit=20)
-            history     = _history_to_dicts(history_orm)
+            session = await get_or_create_session(db, session_id) # if not creates new session 
+            history_orm = await get_history(db, session_id, limit=20) #Loads previous messages.
+            history     = _history_to_dicts(history_orm) # converts to dict format 
             
-            if not history:
+            if not history: # if not creates title for chat 
                 session.title = message[:40] + ("..." if len(message) > 40 else "")
-                db.add(session)
-                await db.flush()
+                
+            session.updated_at = datetime.now(timezone.utc)
+            db.add(session)
+            await db.flush()
 
             # Never hold a SQLite write transaction while the graph calls APIs.
             await db.commit()
@@ -188,10 +197,11 @@ async def chat_stream(
                 uploaded_files=[{"file_id": fid} for fid in file_id_list],
                 active_url=active_url or None,
                 user_groq_key=user_groq_key or "",
+                agent_model=agent_model,
                 farmer_mode=farmer_mode,
             )
 
-            yield {
+            yield { #Immediately send event.
                 "event": "log",
                 "data": json.dumps({"node": "system", "message": f"🤖 Processing: '{message[:50]}'"}),
             }
@@ -278,18 +288,20 @@ async def chat_stream(
     return EventSourceResponse(event_generator())
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================
 # GET /chat/history/{session_id}
-# ══════════════════════════════════════════════════════════════════════════════
+# =============================================
 
+# Returns old messages.
+# Useful when reopening chat.
 @router.get(
-    "/history/{session_id}",
-    response_model=list[MessageOut],
-    summary="Retrieve conversation history for a session",
+    "/history/{session_id}", # get history
+    response_model=list[MessageOut], # response model
+    summary="Retrieve conversation history for a session", # summary 
 )
 async def get_chat_history(
-    session_id: str,
-    limit: int = Query(default=50, ge=1, le=200),
+    session_id: str, # session id
+    limit: int = Query(default=50, ge=1, le=200), # limit
     db: AsyncSession = Depends(get_db),
 ) -> list[MessageOut]:
     """Return the last N messages for a session."""
@@ -300,7 +312,7 @@ async def get_chat_history(
 # ══════════════════════════════════════════════════════════════════════════════
 # DELETE /chat/session/{session_id}
 # ══════════════════════════════════════════════════════════════════════════════
-
+ # delete entire chat 
 @router.delete(
     "/session/{session_id}",
     summary="Clear a session's conversation history",
@@ -320,7 +332,7 @@ async def clear_session(
 # ══════════════════════════════════════════════════════════════════════════════
 # GET /chat/sessions — Recent sessions list for sidebar
 # ══════════════════════════════════════════════════════════════════════════════
-
+ # returns recent chats on sidebar 
 @router.get(
     "/sessions",
     summary="List recent chat sessions",
@@ -329,9 +341,9 @@ async def list_sessions(
     limit: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    """Return the most recent *limit* sessions (id + title + updated_at)."""
+    """Return the most recent *limit* sessions (id + title + updated_at + is_pinned)."""
     result = await db.execute(
-        select(Session).order_by(desc(Session.updated_at)).limit(limit)
+        select(Session).order_by(desc(Session.is_pinned), desc(Session.updated_at)).limit(limit)
     )
     sessions = result.scalars().all()
     return [
@@ -340,7 +352,55 @@ async def list_sessions(
             "title": s.title or "New Chat",
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "is_pinned": s.is_pinned,
         }
         for s in sessions
     ]
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PUT /chat/session/{session_id}/pin — Toggle pin status
+# ══════════════════════════════════════════════════════════════════════════════
+@router.put(
+    "/session/{session_id}/pin",
+    summary="Toggle pin status of a session",
+)
+async def toggle_pin_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Toggle the is_pinned flag for a session."""
+    session = await get_or_create_session(db, session_id)
+    session.is_pinned = not session.is_pinned
+    await db.commit()
+    logger.info("[chat] Toggled pin for session: %s to %s", session_id, session.is_pinned)
+    return {"message": f"Session pin toggled.", "session_id": session_id, "is_pinned": session.is_pinned}
+
+# User
+#    │
+#    ▼
+# POST /chat
+#    │
+#    ▼
+# Load Session
+#    │
+#    ▼
+# Load History
+#    │
+#    ▼
+# Create LangGraph State
+#    │
+#    ▼
+# Gateway
+#    │
+# Supervisor
+#    │
+# Specialized Agent
+#    │
+#    ▼
+# Generate Answer
+#    │
+#    ▼
+# Save Messages
+#    │
+#    ▼
+# Return Response

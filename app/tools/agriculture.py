@@ -1,3 +1,8 @@
+
+# "This file handles agriculture-related features. It fetches mandi prices from the Government of India AGMARKNET API, 
+# formats the response, and returns crop prices to the farmer agent."
+
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +16,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Connects to the AGMARKNET API.
+# Sends commodity (Wheat, Rice, etc.) and optional state.
+# Retries if the API fails.
+# Returns raw JSON data.
 def _fetch_mandi_prices_sync(commodity: str, state: str = "", max_results: int = 15) -> dict[str, Any]:
     """
     Synchronous fetching of Mandi prices from data.gov.in AGMARKNET API.
@@ -60,6 +69,7 @@ def _fetch_mandi_prices_sync(commodity: str, state: str = "", max_results: int =
     
     return {"error": "Failed to fetch data after retries"}
 
+#Prevents FastAPI from blocking while waiting for the API response.
 async def get_mandi_prices(commodity: str, state: str = "", max_results: int = 15) -> dict[str, Any]:
     """
     Async wrapper to fetch mandi prices.
@@ -67,6 +77,7 @@ async def get_mandi_prices(commodity: str, state: str = "", max_results: int = 1
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _fetch_mandi_prices_sync, commodity, state, max_results)
 
+# return ans in proper format like state , market , price 
 def format_mandi_prices(data: dict[str, Any], commodity: str) -> str:
     """
     Format the AGMARKNET API response into a readable summary.
@@ -98,3 +109,21 @@ def format_mandi_prices(data: dict[str, Any], commodity: str) -> str:
 
     lines.extend(["", "*Source: AGMARKNET via data.gov.in*"])
     return "\n".join(lines)
+
+
+# Farmer asks
+#       │
+#       ▼
+# get_mandi_prices()
+#       │
+#       ▼
+# Government API
+#       │
+#       ▼
+# JSON Response
+#       │
+#       ▼
+# format_mandi_prices()
+#       │
+#       ▼
+# LLM Response

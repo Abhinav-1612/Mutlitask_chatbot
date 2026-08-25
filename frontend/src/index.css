@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --yellow: #F5C518;
+  --yellow-hover: #E8B800;
+  --yellow-light: #FEFCE8;
+  --yellow-mid: #FEF08A;
+  --black: #0A0A0A;
+  --sidebar-w: 300px;
+}
+
+
+
+html, body, #root {
+  height: 100%;
+  font-family: 'Plus Jakarta Sans', -apple-system, system-ui, sans-serif;
+  background: #fff;
+  color: #0A0A0A;
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+html.dark, html.dark body, html.dark #root {
+  background: #05050A; /* Deep dark neon space */
+  color: #e2e8f0;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+html.dark ::-webkit-scrollbar-thumb { background: #1f2937; }
+html.dark ::-webkit-scrollbar-thumb:hover { background: #374151; }
+
+/* ── Logo hero animation ── */
+.hero-logo {
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Message fade in ── */
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.msg-in { animation: msgIn 0.3s ease forwards; }
+
+/* ── Thinking dots ── */
+@keyframes bop {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40%           { transform: translateY(-5px); opacity: 1; }
+}
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #F5C518; animation: bop 1.2s infinite; }
+.dot:nth-child(2) { animation-delay: 0.15s; }
+.dot:nth-child(3) { animation-delay: 0.30s; }
+
+/* ── Prose markdown ── */
+.prose { font-size: 15.5px; line-height: 1.75; color: #111; }
+.prose h1,.prose h2,.prose h3 { font-weight: 800; color: #000; margin: 1.1em 0 0.45em; }
+.prose h2 { font-size: 1.15em; }
+.prose h3 { font-size: 1.05em; }
+.prose p  { margin: 0.6em 0; }
+.prose ul,.prose ol { padding-left: 1.5em; margin: 0.5em 0; }
+.prose li { margin: 0.3em 0; }
+.prose strong { font-weight: 700; }
+.prose a { color: #B45309; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.prose code {
+  font-family: 'JetBrains Mono', monospace;
+  background: #f3f4f6; border: 1px solid #e5e7eb;
+  border-radius: 5px; padding: 0.12em 0.42em;
+  font-size: 0.85em; color: #9a3412;
+}
+.prose pre {
+  background: #0a0a0a; border-radius: 12px; padding: 1rem;
+  overflow-x: auto; margin: 0.9em 0; border: 1px solid #222;
+}
+.prose pre code { background: none; border: none; color: #e5e7eb; padding: 0; }
+.prose blockquote {
+  border-left: 4px solid #F5C518; background: #fefce8;
+  padding: 0.5rem 1rem; border-radius: 0 8px 8px 0;
+  color: #78350f; margin: 0.8em 0;
+}
+.prose table { width: 100%; border-collapse: collapse; font-size: 0.93em; margin: 0.9em 0; }
+.prose th { background: #fef08a; color: #000; font-weight: 700; padding: 0.5rem 0.75rem; border: 1px solid #e5e7eb; }
+.prose td { padding: 0.45rem 0.75rem; border: 1px solid #e5e7eb; }
+.prose tr:nth-child(even) td { background: #fafafa; }
+
+/* ── Clean Dark Prose ── */
+.dark .prose { color: #d1d5db; }
+.dark .prose h1, .dark .prose h2, .dark .prose h3 { color: #f3f4f6; font-weight: 800; }
+.dark .prose strong { color: #f9fafb; }
+.dark .prose a { color: #60a5fa; }
+.dark .prose a:hover { color: #93c5fd; }
+.dark .prose code { background: rgba(255,255,255,0.1); color: #e5e7eb; border: 1px solid rgba(255,255,255,0.2); }
+.dark .prose pre { background: #111827; border: 1px solid #374151; }
+.dark .prose pre code { background: transparent; border: none; color: #e5e7eb; }
+.dark .prose blockquote { background: rgba(255,255,255,0.05); border-left: 4px solid #6b7280; color: #9ca3af; }
+.dark .prose table { border-collapse: separate; border-spacing: 0; }
+.dark .prose th { background: rgba(255,255,255,0.1); color: #f3f4f6; border: 1px solid #374151; }
+.dark .prose td { border: 1px solid #374151; }
+.dark .prose tr:nth-child(even) td { background: rgba(255,255,255,0.02); }

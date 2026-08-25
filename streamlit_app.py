@@ -1,3 +1,7 @@
+# "This file builds the Streamlit frontend for my chatbot. 
+# It manages the user interface, chat history, file uploads, API key input, and sends requests to the FastAPI backend. 
+# It also receives streaming responses using Server-Sent Events (SSE) and displays them in real time."
+
 import streamlit as st
 import requests
 import uuid
@@ -14,7 +18,9 @@ try:
 except Exception:
     API_URL_BASE = os.environ.get("API_URL_BASE", "http://127.0.0.1:8000").rstrip("/")
 
+
 # ─── API HELPERS ──────────────────────────────────────────────────────────────
+# This is a helper function for making GET requests to your FastAPI backend.
 def _api_get(path: str, **params) -> dict | list | None:
     """GET to the FastAPI backend; displays an error in the sidebar on failure."""
     try:
@@ -27,13 +33,13 @@ def _api_get(path: str, **params) -> dict | list | None:
         st.sidebar.error(f"❌ Backend Connection Error!\n\nTried to reach: `{API_URL_BASE}`\n\nError: {e}")
         return None
 
-
+#Gets all recent chat sessions. for sidebar 
 def fetch_sessions() -> list[dict]:
     """Return list of recent chat sessions from the API."""
     result = _api_get("/chat/sessions", limit=30)
     return result if isinstance(result, list) else []
 
-
+#Loads previous conversation of one session.
 def fetch_history(session_id: str) -> list[dict]:
     """Return message history for a session from the API."""
     result = _api_get(f"/chat/history/{session_id}", limit=50)
@@ -278,6 +284,7 @@ st.markdown("""
 
 
 # ─── TYPEWRITER STREAMING ─────────────────────────────────────────────────────
+#Streams chatbot response word by word.
 def stream_text(text: str):
     """Yield word-level chunks without artificial delay."""
     chunks = re.split(r'(\s+)', text)
@@ -286,6 +293,7 @@ def stream_text(text: str):
 
 
 # ─── INIT STATE ───────────────────────────────────────────────────────────────
+#Creates variables that remain available while the app is running.
 defaults = {
     "session_id": None,
     "messages": [],
@@ -293,6 +301,7 @@ defaults = {
     "uploaded_file_ids": [],
     "active_url": "",
     "user_groq_key": "",
+    "agent_model": "openai/gpt-oss-120b",
     "sessions_loaded": False,
 }
 for key, val in defaults.items():
@@ -350,6 +359,27 @@ with st.sidebar:
             "style='color:#38bdf8;'>Groq key</a> above if you hit rate limits.</div>",
             unsafe_allow_html=True,
         )
+
+    st.markdown("---")
+
+    # ── Model Selection ───────────────────────────────────────────────────────
+    st.markdown(
+        "<p style='font-size:0.72em; color:#4a4a6a; text-transform:uppercase; "
+        "letter-spacing:1px; margin-bottom:4px;'>🧠 Model Selection</p>",
+        unsafe_allow_html=True,
+    )
+    selected_model = st.selectbox(
+        "Agent Model",
+        options=[
+            "openai/gpt-oss-120b",
+            "qwen/qwen3.6-27b"
+        ],
+        index=0 if st.session_state.agent_model == "openai/gpt-oss-120b" else 1,
+        label_visibility="collapsed",
+        key="model_selectbox"
+    )
+    if selected_model != st.session_state.agent_model:
+        st.session_state.agent_model = selected_model
 
     st.markdown("---")
     
@@ -562,6 +592,7 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                 "file_ids":      ",".join(st.session_state.uploaded_file_ids),
                 "active_url":    st.session_state.active_url or "",
                 "user_groq_key": active_groq_key,
+                "agent_model":   st.session_state.agent_model,
                 "farmer_mode":   "true" if farmer_mode else "false",
             }
 
