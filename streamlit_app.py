@@ -55,6 +55,15 @@ def delete_session(session_id: str) -> bool:
         return False
 
 
+def toggle_pin(session_id: str) -> bool:
+    """Toggle the pin status of a session."""
+    try:
+        resp = requests.put(f"{API_URL_BASE}/chat/session/{session_id}/pin", timeout=10)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 # ─── PAGE CONFIG ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Universal Omni-Agent",
@@ -487,12 +496,16 @@ with st.sidebar:
             display = (title[:26] + "…") if len(title) > 28 else title
             is_active = st.session_state.session_id == sid
 
-            # Show each session as a row: button + (optional) delete
-            col_btn, col_del = st.columns([5, 1], gap="small")
+            # Show each session as a row: button + pin + delete
+            col_btn, col_pin, col_del = st.columns([5, 1, 1], gap="small")
+            
+            is_pinned = s.get("is_pinned", False) if isinstance(s, dict) else getattr(s, "is_pinned", False)
+            pin_icon = "📌 " if is_pinned else ""
+            
             with col_btn:
                 btn_style = "primary" if is_active else "secondary"
                 if st.button(
-                    f"{'▶ ' if is_active else '💬 '}{display}",
+                    f"{pin_icon}{'▶ ' if is_active else '💬 '}{display}",
                     key=f"sess_{sid}",
                     use_container_width=True,
                     help=f"{title}\n{time_label}" if time_label else title,
@@ -507,6 +520,11 @@ with st.sidebar:
                         for m in history
                     ]
                     st.rerun()
+            with col_pin:
+                if st.button("📍" if not is_pinned else "📌", key=f"pin_{sid}", help="Pin/Unpin this chat"):
+                    if toggle_pin(sid):
+                        st.session_state.sidebar_sessions = fetch_sessions()
+                        st.rerun()
             with col_del:
                 if st.button("🗑", key=f"del_{sid}", help="Delete this chat"):
                     if delete_session(sid):
