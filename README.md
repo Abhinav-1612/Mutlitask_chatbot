@@ -8,9 +8,9 @@ pinned: false
 ---
 # 🤖 Universal Omni-Agent (Research & Multi-Task Chatbot)
 
-A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **LangGraph**. This intelligent assistant routes your queries dynamically to specialized sub-agents, capable of performing real-time web searches, querying financial data, fetching weather, retrieving academic papers from ArXiv, and analyzing uploaded PDF documents using Retrieval-Augmented Generation (RAG).
+A powerful, multi-agent AI system built with **FastAPI**, **React**, and **LangGraph**. This intelligent assistant routes your queries dynamically to specialized sub-agents, capable of performing real-time web searches, querying financial data, fetching weather, retrieving academic papers, assisting farmers with agricultural data, and analyzing uploaded PDF documents using Retrieval-Augmented Generation (RAG).
 
-![Omni-Agent UI Preview](https://img.shields.io/badge/UI-Streamlit-FF4B4B?style=flat-square&logo=streamlit)
+![Omni-Agent UI Preview](https://img.shields.io/badge/UI-React-61DAFB?style=flat-square&logo=react)
 ![Backend](https://img.shields.io/badge/Backend-FastAPI-009688?style=flat-square&logo=fastapi)
 ![AI Framework](https://img.shields.io/badge/AI-LangGraph-purple?style=flat-square)
 
@@ -25,11 +25,11 @@ A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **L
 - **📈 Finance & Live Sports**: Get up-to-date stock prices via Yahoo Finance and live cricket/sports scores.
 - **☀️ Live Weather Forecasts**: Integrated with Open-Meteo for accurate, current weather data worldwide.
 - **⚡ Fast SSE Streaming**: Responses are streamed word-by-word to the UI for a seamless, ChatGPT-like experience.
-- **🎨 Modern Dark UI**: A beautiful, custom-styled Streamlit interface featuring history tracking, session management, and visual route indicators.
+- **🎨 Modern Dark UI**: A beautiful, custom-styled React frontend with Tailwind CSS, featuring history tracking, session management, and a deep-purple aesthetic.
 
 ## 🛠️ Technology Stack
 
-- **Frontend**: Streamlit
+- **Frontend**: React.js (Vite) & Tailwind CSS
 - **Backend API**: FastAPI (Python)
 - **AI Models**: Groq (gpt-oss-120b for reasoning, qwen3.6-27b for routing)
 - **Agent Orchestration**: LangChain & LangGraph
@@ -41,6 +41,7 @@ A powerful, multi-agent AI system built with **FastAPI**, **Streamlit**, and **L
 
 ### 1. Prerequisites
 - Python 3.10+
+- Node.js (v18+)
 - A [Groq API Key](https://console.groq.com/keys)
 - A [Pinecone API Key](https://www.pinecone.io/)
 
@@ -73,12 +74,14 @@ uvicorn app.main:app --reload
 ```
 The backend will run on `http://localhost:8000`.
 
-**Start the Streamlit Frontend:**
+**Start the React Frontend:**
 Open a new terminal window and run:
 ```bash
-streamlit run streamlit_app.py
+cd frontend
+npm install
+npm run dev
 ```
-The UI will be accessible at `http://localhost:8501`.
+The UI will be accessible at `http://localhost:5173`.
 
 ## 📁 Project Structure
 
@@ -94,7 +97,7 @@ The UI will be accessible at `http://localhost:8501`.
 │   ├── graph.py         # LangGraph workflow definition
 │   ├── main.py          # FastAPI application entry point
 │   └── sse.py           # Server-Sent Events parser
-├── streamlit_app.py     # Main Streamlit UI frontend
+├── frontend/            # React frontend application
 ├── requirements.txt     # Python dependencies
 └── .env                 # Environment variables (not tracked by git)
 ```
@@ -106,7 +109,8 @@ The UI will be accessible at `http://localhost:8501`.
    - `web_node`: Scrapes duckduckgo and Open-Meteo.
    - `finance_node`: Retrieves stock data (via direct chart API) and live cricket scores.
    - `rag_node`: Performs Pinecone similarity searches and ArXiv retrievals.
-   - `general_node`: Direct conversational gpt-oss-120b interacting with basic tools.
+   - `farmer_node`: Dedicated agent for agricultural commodity prices (Agmarknet).
+   - `general_node`: Direct conversational agent interacting with basic tools.
 
 ## 🤝 Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
