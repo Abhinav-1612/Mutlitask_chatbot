@@ -1,11 +1,3 @@
----
-title: Omni Agent API
-emoji: 🤖
-colorFrom: blue
-colorTo: purple
-sdk: docker
-pinned: false
----
 # 🤖 Universal Omni-Agent (Research & Multi-Task Chatbot)
 **[🚀 Try the Live Omni-Agent App Here](https://mutlitaskchatbot-577qu3rmyfrufsquvph4aa.streamlit.app/)**
 
