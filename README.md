@@ -7,6 +7,7 @@ sdk: docker
 pinned: false
 ---
 # 🤖 Universal Omni-Agent (Research & Multi-Task Chatbot)
+**[🚀 Try the Live Omni-Agent App Here](https://mutlitaskchatbot-577qu3rmyfrufsquvph4aa.streamlit.app/)**
 
 A powerful, multi-agent AI system built with **FastAPI**, **React**, and **LangGraph**. This intelligent assistant routes your queries dynamically to specialized sub-agents, capable of performing real-time web searches, querying financial data, fetching weather, retrieving academic papers, assisting farmers with agricultural data, and analyzing uploaded PDF documents using Retrieval-Augmented Generation (RAG).
 
