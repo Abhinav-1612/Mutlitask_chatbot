@@ -449,6 +449,7 @@ with st.sidebar:
     if st.button("➕ New Chat", use_container_width=True, type="primary"):
         st.session_state.session_id = None
         st.session_state.messages = []
+        st.session_state.uploaded_file_ids = []
         st.rerun()
 
     # ── Recent Chats ──────────────────────────────────────────────────────────
@@ -511,6 +512,7 @@ with st.sidebar:
                     help=f"{title}\n{time_label}" if time_label else title,
                 ):
                     st.session_state.session_id = sid
+                    st.session_state.uploaded_file_ids = []
                     history = fetch_history(sid)
                     st.session_state.messages = [
                         {
@@ -592,9 +594,16 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
         st.session_state.session_id = str(uuid.uuid4())
 
     # Append & display user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    display_content = prompt
+    if st.session_state.uploaded_file_ids:
+        pdf_names = [k.replace("uploaded_", "") for k in st.session_state.keys() if k.startswith("uploaded_") and st.session_state[k] is True]
+        if pdf_names:
+            badges = " ".join([f"<span style='background-color:#1e1e2d; color:#a78bfa; padding:4px 10px; border-radius:12px; font-size:0.75em; border:1px solid #3f3f46;'>📄 {name}</span>" for name in pdf_names])
+            display_content = f"<div style='margin-bottom:10px;'>{badges}</div>\n\n{prompt}"
+
+    st.session_state.messages.append({"role": "user", "content": display_content})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(display_content, unsafe_allow_html=True)
 
     # Determine which API key to use
     active_groq_key = st.session_state.user_groq_key
@@ -624,6 +633,8 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
 
             final_result = None
             stream_error = None
+            execution_steps = []
+            start_time = time.time()
 
             for event in iter_sse_events(response.iter_lines(decode_unicode=True)):
                 event_type = event["event"]
@@ -632,6 +643,7 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                     data = json.loads(event_data)
                     node = data.get("node", "system").upper()
                     msg_text = data.get("message", "")
+                    execution_steps.append({"node": node, "message": msg_text})
 
                     if "🔀 Routing" in msg_text:
                         status.write(f"🔀 **Routing Decision**: {msg_text.replace('🔀 Routing to: ', '')}")
@@ -668,9 +680,12 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
 
             # Stream final response
             if final_result:
-                bot_reply  = final_result.get("answer", "")
-                route_used = final_result.get("route", "general")
-                sources    = final_result.get("sources", [])
+                latency = time.time() - start_time
+                bot_reply    = final_result.get("answer", "No content.")
+                route_used   = final_result.get("route", "general")
+                sources      = final_result.get("sources", [])
+                total_tokens = final_result.get("total_tokens", 0)
+                tools_called = final_result.get("tools_called", [])
 
                 tags = {
                     "finance":   ("📈 FINANCE / CRICKET", "#fbbf24"),
@@ -689,6 +704,22 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                     f"border: 1px solid {tag_color}33;'>{tag_label}</span>\n\n"
                 )
 
+                execution_html = ""
+                if execution_steps:
+                    execution_html += f"<details style='background-color:#0f0f1a; border: 1px solid #1e1e30; border-radius: 8px; padding: 10px; margin-bottom: 12px;'><summary style='color:#a78bfa; cursor:pointer; font-weight:600;'>Execution Flow ({len(execution_steps)} steps) ▾</summary><div style='padding-top:10px; font-size:0.85em; color:#d1d5db;'>"
+                    for step in execution_steps:
+                        s_node = step["node"]
+                        s_msg = step["message"]
+                        icon = "⚡"
+                        if "Routing" in s_msg: icon = "🔀"
+                        elif "Using:" in s_msg: icon = "🛠️"
+                        elif "cricket" in s_msg.lower() or "score" in s_msg.lower(): icon = "🏏"
+                        elif "weather" in s_msg.lower(): icon = "☀️"
+                        elif "search" in s_msg.lower() or "web" in s_msg.lower(): icon = "🔍"
+                        elif "qdrant" in s_msg.lower() or "retriev" in s_msg.lower(): icon = "📚"
+                        execution_html += f"<div style='margin-bottom:6px;'>{icon} <b>[{s_node}]</b> {s_msg}</div>"
+                    execution_html += "</div></details>\n\n"
+
                 # ── Extract news images from sources ──────────────────────────
                 news_with_images = [
                     s for s in sources
@@ -696,10 +727,10 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                 ]
 
                 # ── Render route badge ─────────────────────────────────────────
-                st.markdown(route_html, unsafe_allow_html=True)
+                st.markdown(execution_html + route_html, unsafe_allow_html=True)
                 
                 # Collect HTML to save to history
-                persistent_html = route_html
+                persistent_html = execution_html + route_html
 
                 if news_with_images:
                     for s in news_with_images:
@@ -757,7 +788,14 @@ if prompt := st.chat_input("Ask me anything — weather, news, cricket score, st
                             source_footer = "\n\n---\n**Sources:** " + " · ".join(source_lines)
                             st.markdown(source_footer)
 
-                full_content = persistent_html + bot_reply + source_footer
+                stats_footer = ""
+                if total_tokens > 0 or tools_called:
+                    tools_str = ", ".join(set(tools_called)) if tools_called else "None"
+                    node_name = "Farmer Node" if route_used == "farmer" else "Omni-Agent Node"
+                    stats_footer = f"\n\n---\n<div style='font-size:0.8em; color:#a1a1aa; font-family:monospace; background-color:#1e1e24; padding:8px 12px; border-radius:6px; margin-top:10px; border:1px solid #3f3f46;'>⏱️ <b>Time:</b> {latency:.2f}s &nbsp;|&nbsp; 🧠 <b>Node:</b> {node_name} &nbsp;|&nbsp; 🔧 <b>Tools:</b> {tools_str} &nbsp;|&nbsp; ⚡ <b>Tokens:</b> {total_tokens:,}</div>"
+                    st.markdown(stats_footer, unsafe_allow_html=True)
+
+                full_content = persistent_html + bot_reply + source_footer + stats_footer
                 st.session_state.messages.append({"role": "assistant", "content": full_content})
             else:
                 message = stream_error or "The backend stream ended without returning an answer."

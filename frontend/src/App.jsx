@@ -9,10 +9,10 @@ import {
   Search, Calculator, Code, FileText, Database, Trash2, Sprout,
   KeyRound, Sparkles, ChevronLeft, ChevronRight, Link2, Upload,
   AlertCircle, CheckCircle2, RefreshCw, X, Sun, Eye, Mic, ArrowRight,
-  MonitorPlay, Languages, Scaling, Square, Copy, Edit2, Check, Pin
+  MonitorPlay, Languages, Scaling, Square, Copy, Edit2, Check, Pin, ExternalLink
 } from 'lucide-react'
 
-const API_BASE = '/api'
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const genSessionId = () => `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
 const ROUTE_META = {
@@ -77,36 +77,180 @@ function formatRelativeTime(isoString) {
 
 function SourceChips({ sources }) {
   if (!sources || sources.length === 0) return null
-  const valid = sources.filter(s => s.url)
+  const seen = new Set()
+  const valid = sources.filter(s => {
+    if (!s.url || seen.has(s.url)) return false
+    seen.add(s.url)
+    return true
+  })
   if (valid.length === 0) return null
 
   return (
-    <div className="mt-4 pt-3 border-t border-gray-100">
-      <div className="flex flex-col gap-3">
-        {valid.map((s, i) => (
-          <div key={i} className="flex flex-col gap-1.5">
+    <div className="mt-3.5 pt-3 border-t border-gray-100 dark:border-gray-800/80">
+      <div className="flex items-center gap-1.5 mb-2 text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-400">
+        <Globe size={12} className="text-sky-500" />
+        <span>Verified Sources & Citations</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {valid.slice(0, 6).map((s, i) => {
+          let host = ''
+          try { host = new URL(s.url).hostname.replace(/^www\./, '') } catch { host = 'Source' }
+          const label = s.source || host
+          return (
             <a
+              key={i}
               href={s.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[14px] font-bold text-gray-900 hover:text-[#B45309] hover:underline"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 dark:bg-[#151520] hover:bg-gray-100 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700/60 text-[12px] font-semibold text-gray-700 dark:text-gray-300 transition-all hover:scale-[1.02] shadow-2xs group/chip"
+              title={s.title || s.url}
             >
-              {s.title || new URL(s.url).hostname}
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-500 shrink-0"></span>
+              <span className="truncate max-w-[150px]">{label}</span>
+              <ExternalLink size={10} className="text-gray-400 group-hover/chip:text-sky-500 shrink-0" />
             </a>
-            {s.snippet && <p className="text-[13px] text-gray-600 line-clamp-3 leading-relaxed">{s.snippet}</p>}
-            <a href={s.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-800">
-              <Globe size={11} /> {new URL(s.url).hostname} · Read article →
-            </a>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
 }
 
-function ChatMessage({ msg, isStreaming, onEdit }) {
+function getNodeMeta(nodeName) {
+  const n = (nodeName || '').toLowerCase()
+  if (n.includes('router')) {
+    return {
+      label: 'Router Node',
+      icon: Sparkles,
+      color: 'text-amber-600 dark:text-amber-400',
+      dotBg: 'bg-amber-500',
+      badgeBg: 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/40',
+    }
+  }
+  if (n.includes('omni') || n.includes('agent')) {
+    return {
+      label: 'Omni-Agent Node',
+      icon: Cpu,
+      color: 'text-indigo-600 dark:text-purple-400',
+      dotBg: 'bg-indigo-500 dark:bg-purple-500',
+      badgeBg: 'bg-indigo-50 dark:bg-purple-950/40 text-indigo-700 dark:text-purple-300 border-indigo-200 dark:border-purple-800/40',
+    }
+  }
+  if (n.includes('tool')) {
+    return {
+      label: 'Tools Execution Node',
+      icon: Wrench,
+      color: 'text-sky-600 dark:text-sky-400',
+      dotBg: 'bg-sky-500',
+      badgeBg: 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/40',
+    }
+  }
+  if (n.includes('retrieval') || n.includes('data')) {
+    return {
+      label: 'Data Retrieval Node',
+      icon: Database,
+      color: 'text-emerald-600 dark:text-emerald-400',
+      dotBg: 'bg-emerald-500',
+      badgeBg: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40',
+    }
+  }
+  if (n.includes('synthesis')) {
+    return {
+      label: 'Synthesis Node',
+      icon: Zap,
+      color: 'text-yellow-600 dark:text-yellow-400',
+      dotBg: 'bg-yellow-500',
+      badgeBg: 'bg-yellow-50 dark:bg-yellow-950/40 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800/40',
+    }
+  }
+  if (n.includes('farmer')) {
+    return {
+      label: 'Farmer Node',
+      icon: Sprout,
+      color: 'text-emerald-600 dark:text-emerald-400',
+      dotBg: 'bg-emerald-500',
+      badgeBg: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40',
+    }
+  }
+  if (n.includes('completion') || n.includes('complete')) {
+    return {
+      label: 'Completion Node',
+      icon: CheckCircle2,
+      color: 'text-emerald-600 dark:text-emerald-400',
+      dotBg: 'bg-emerald-500',
+      badgeBg: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40',
+    }
+  }
+  return {
+    label: nodeName || 'Agent Step',
+    icon: Activity,
+    color: 'text-gray-600 dark:text-gray-400',
+    dotBg: 'bg-gray-400',
+    badgeBg: 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-700',
+  }
+}
+
+function ExecutionFlowTimeline({ steps, isStreaming }) {
+  if (!steps || steps.length === 0) return null
+
+  return (
+    <div className="flex flex-col space-y-0 relative py-1">
+      {steps.map((step, idx) => {
+        const isLast = idx === steps.length - 1
+        const rawNode = step.node || 'Agent'
+        const meta = getNodeMeta(rawNode)
+        const Icon = meta.icon
+        const msgText = step.msg || step.message || ''
+
+        const isTool = msgText.includes('tool_') || msgText.includes('Calling:') || rawNode.toLowerCase().includes('tool')
+
+        return (
+          <div key={idx} className="flex items-start gap-3.5 relative group animate-fade-in">
+            {/* Step Indicator */}
+            <div className="flex flex-col items-center self-stretch shrink-0">
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center ${meta.dotBg} text-white shadow-xs z-10 ${isStreaming && isLast ? 'animate-pulse ring-4 ring-yellow-400/30' : ''}`}>
+                <Icon size={12} strokeWidth={2.5} />
+              </div>
+              {!isLast && (
+                <div className="w-0.5 flex-1 bg-gray-200 dark:bg-purple-900/60 my-1 min-h-[22px]"></div>
+              )}
+            </div>
+
+            {/* Step Content */}
+            <div className={`flex flex-col pb-3.5 flex-1 min-w-0 ${isLast ? 'pb-1' : ''}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-[11px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${meta.badgeBg}`}>
+                  {meta.label}
+                </span>
+                {isStreaming && isLast && (
+                  <span className="flex items-center gap-1 text-[10px] font-bold text-yellow-600 dark:text-yellow-400 animate-pulse">
+                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-ping"></span>
+                    Executing...
+                  </span>
+                )}
+              </div>
+              
+              <div className="mt-1 text-[13px] leading-relaxed text-gray-700 dark:text-gray-300 break-words">
+                {isTool ? (
+                  <code className="bg-gray-100 dark:bg-gray-800 text-sky-700 dark:text-sky-300 px-2 py-0.5 rounded font-mono text-[12px] font-semibold inline-block">
+                    {msgText}
+                  </code>
+                ) : (
+                  <span>{msgText}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ChatMessage({ msg, isStreaming, currentLogs, onEdit }) {
   const isUser = msg.role === 'user'
   const [copied, setCopied] = useState(false)
+  const [showFlow, setShowFlow] = useState(false)
 
   const handleCopy = () => {
     navigator.clipboard.writeText(msg.content)
@@ -114,11 +258,26 @@ function ChatMessage({ msg, isStreaming, onEdit }) {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const flowSteps = msg.execution_flow || (isStreaming ? currentLogs : [])
+
   return (
     <div className={`flex flex-col mb-8 animate-fade-in group/message`}>
       {isUser ? (
-        <div className="self-end max-w-[85%] sm:max-w-[75%] relative">
-          <div className="bg-[#0A0A0A] dark:bg-purple-900/60 text-white dark:text-purple-50 px-5 py-3.5 rounded-2xl rounded-tr-sm shadow-sm dark:border dark:border-purple-500/30 text-[15px] leading-relaxed break-words">
+        <div className="self-end max-w-[85%] sm:max-w-[75%] relative flex flex-col">
+          {/* Attached Files */}
+          {msg.files && msg.files.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-2 mb-2">
+              {msg.files.map((f, i) => (
+                <div key={i} className="flex items-center gap-2.5 bg-gray-100 dark:bg-[#1a1a24] text-gray-800 dark:text-gray-200 px-3 py-2 rounded-xl shadow-sm border border-gray-200 dark:border-purple-800/40 text-[13px] font-bold">
+                  <div className="w-8 h-8 rounded-lg bg-[#F5C518] dark:bg-purple-600 flex items-center justify-center shrink-0 shadow-sm">
+                    <FileText size={16} className="text-black dark:text-white" />
+                  </div>
+                  <span className="truncate max-w-[180px]">{f.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="bg-[#0A0A0A] dark:bg-purple-900/60 text-white dark:text-purple-50 px-5 py-3.5 rounded-2xl rounded-tr-sm shadow-sm dark:border dark:border-purple-500/30 text-[15px] leading-relaxed break-words self-end w-fit ml-auto">
             {msg.content}
           </div>
           <div className="flex items-center justify-end gap-3 mt-2 opacity-0 group-hover/message:opacity-100 transition-opacity pr-1">
@@ -160,13 +319,42 @@ function ChatMessage({ msg, isStreaming, onEdit }) {
                   remarkPlugins={[remarkGfm]}
                   rehypePlugins={[rehypeRaw]}
                   components={{
-                    a: ({ node, ...props }) => (
-                      <a 
-                        {...props} 
-                        target="_blank" 
-                        rel="noopener noreferrer" 
-                        className="text-[#0284C7] font-semibold hover:underline hover:text-[#0369A1] transition-colors"
-                      />
+                    a: ({ node, children, href, ...props }) => {
+                      const text = String(children || '')
+                      const isActionBtn = text.includes('→') || text.includes('Read') || text.includes('Source')
+                      if (isActionBtn) {
+                        return (
+                          <a 
+                            {...props} 
+                            href={href}
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="inline-flex items-center gap-1.5 px-3 py-1 my-1.5 rounded-lg bg-yellow-50 dark:bg-purple-950/50 text-yellow-900 dark:text-purple-200 hover:bg-yellow-100 dark:hover:bg-purple-900/80 border border-yellow-200 dark:border-purple-800/60 font-bold text-[12px] transition-all hover:scale-[1.02] shadow-2xs no-underline group/btn cursor-pointer"
+                          >
+                            <span>{children}</span>
+                            <ExternalLink size={11} className="text-yellow-600 dark:text-purple-400 group-hover/btn:translate-x-0.5 transition-transform" />
+                          </a>
+                        )
+                      }
+                      return (
+                        <a 
+                          {...props} 
+                          href={href}
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="text-[#0284C7] dark:text-sky-400 font-semibold hover:underline hover:text-[#0369A1] dark:hover:text-sky-300 transition-colors"
+                        >
+                          {children}
+                        </a>
+                      )
+                    },
+                    hr: ({ node, ...props }) => (
+                      <hr {...props} className="my-3.5 border-0 border-t border-gray-200 dark:border-gray-800" />
+                    ),
+                    table: ({ node, ...props }) => (
+                      <div className="overflow-x-auto w-full pb-2 mb-4 scrollbar-thin">
+                        <table {...props} className="min-w-full" />
+                      </div>
                     )
                   }}
                 >
@@ -174,14 +362,91 @@ function ChatMessage({ msg, isStreaming, onEdit }) {
                 </ReactMarkdown>
               </div>
             ) : (
-              <div className="flex items-center gap-2 py-1 text-gray-400">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#F5C518] animate-ping"></span>
-                <span className="text-[14px] font-medium text-gray-600">Thinking...</span>
+              /* Live Thinking Phase with Flowchart */
+              <div className="py-2">
+                <div className="flex items-center gap-2.5 mb-4 text-gray-700 dark:text-purple-200">
+                  <span className="w-3 h-3 rounded-full bg-[#F5C518] animate-ping"></span>
+                  <span className="text-[14px] font-bold">NexAi is analyzing and executing workflow...</span>
+                </div>
+                {currentLogs && currentLogs.length > 0 && (
+                  <div className="p-4 bg-gray-50 dark:bg-[#13131c] rounded-2xl border border-gray-200 dark:border-purple-900/40 shadow-inner">
+                    <ExecutionFlowTimeline steps={currentLogs} isStreaming={true} />
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Sources */}
-            {!isUser && msg.sources && <SourceChips sources={msg.sources} />}
+            {/* Stats Footer & Collapsible Execution Flow */}
+            {!isUser && msg.content && (msg.total_tokens > 0 || (msg.tools_called && msg.tools_called.length > 0) || msg.response_time > 0 || (flowSteps && flowSteps.length > 0)) && (
+              <div className="mt-4 pt-3 border-t border-gray-100 dark:border-purple-800/40">
+                {/* Summary Pill Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-3 text-[12px] font-mono text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
+                  <div className="flex flex-wrap items-center gap-3.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[14px]">🧠</span>
+                      <span className="font-semibold text-gray-700 dark:text-gray-300">Node:</span>
+                      <span>{msg.route === 'farmer' ? 'Farmer Node' : 'Omni-Agent Node'}</span>
+                    </div>
+                    <div className="w-px h-3 bg-gray-300 dark:bg-gray-600 hidden sm:block"></div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[14px]">🔧</span>
+                      <span className="font-semibold text-gray-700 dark:text-gray-300">Tools:</span>
+                      <span className="font-bold text-sky-600 dark:text-sky-400">
+                        {msg.tools_called && msg.tools_called.length > 0 ? Array.from(new Set(msg.tools_called)).join(', ') : 'Direct Answer'}
+                      </span>
+                    </div>
+                    <div className="w-px h-3 bg-gray-300 dark:bg-gray-600 hidden sm:block"></div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[14px]">⚡</span>
+                      <span className="font-semibold text-gray-700 dark:text-gray-300">Tokens:</span>
+                      <span className="font-bold text-amber-600 dark:text-amber-400">{msg.total_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                    {msg.response_time > 0 && (
+                      <>
+                        <div className="w-px h-3 bg-gray-300 dark:bg-gray-600 hidden sm:block"></div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[14px]">⏱️</span>
+                          <span className="font-semibold text-gray-700 dark:text-gray-300">Time:</span>
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400">{msg.response_time}s</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Collapsible Flow Toggle Button */}
+                  {flowSteps && flowSteps.length > 0 && (
+                    <button
+                      onClick={() => setShowFlow(prev => !prev)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 text-[11px] font-bold transition-all shadow-xs cursor-pointer ml-auto"
+                    >
+                      <span>{showFlow ? 'Hide Flow' : 'Execution Flow'}</span>
+                      <span className="px-1.5 py-0.2 rounded-full bg-yellow-100 dark:bg-purple-900/60 text-yellow-800 dark:text-purple-300 text-[10px]">
+                        {flowSteps.length} steps
+                      </span>
+                      <ChevronDown size={13} className={`transition-transform duration-200 ${showFlow ? 'rotate-180' : ''}`} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Collapsible Dropdown Flowchart */}
+                {showFlow && flowSteps && flowSteps.length > 0 && (
+                  <div className="mt-3 p-4 bg-gray-50/90 dark:bg-[#13131c] rounded-2xl border border-gray-200 dark:border-purple-900/40 animate-fade-in shadow-inner">
+                    <div className="text-[11px] font-black uppercase tracking-wider text-gray-400 dark:text-purple-300 mb-3.5 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Activity size={13} className="text-yellow-500 dark:text-purple-400" />
+                        Complete Node Execution Flowchart & Tool Trace
+                      </span>
+                      {msg.response_time > 0 && (
+                        <span className="text-emerald-600 dark:text-emerald-400 font-mono font-bold text-[11px]">
+                          Response Latency: {msg.response_time}s
+                        </span>
+                      )}
+                    </div>
+                    <ExecutionFlowTimeline steps={flowSteps} isStreaming={false} />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           
           {msg.content && !isStreaming && (
@@ -210,12 +475,12 @@ function EmptyState({ onSelectPrompt }) {
           <div className="absolute inset-0 rounded-3xl border border-[#F5C518] opacity-0 group-hover:opacity-100 scale-105 transition-all duration-300"></div>
         </div>
 
-        <h1 className="text-5xl sm:text-[64px] font-black tracking-tight text-gray-950 mb-3 leading-none">
-          <span className="text-black">Nex</span>
+        <h1 className="text-5xl sm:text-[64px] font-black tracking-tight text-gray-950 dark:text-gray-100 mb-3 leading-none">
+          <span className="text-black dark:text-white">Nex</span>
           <span className="text-[#F5C518]">Ai</span>
         </h1>
 
-        <p className="text-[15px] sm:text-[17px] text-gray-500 font-medium max-w-2xl mx-auto leading-relaxed mt-4">
+        <p className="text-[15px] sm:text-[17px] text-gray-500 dark:text-gray-400 font-medium max-w-2xl mx-auto leading-relaxed mt-4">
           Your universal multi-agent assistant for web research, live cricket scores, finance, documents, and agriculture.
         </p>
 
@@ -224,7 +489,7 @@ function EmptyState({ onSelectPrompt }) {
           {Object.entries(ROUTE_META).map(([key, meta]) => {
             const Icon = meta.icon
             return (
-              <span key={key} className="flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-bold shadow-sm border border-gray-100 bg-white" style={{ color: meta.color }}>
+              <span key={key} className="flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-bold shadow-sm border border-gray-100 dark:border-purple-800/40 bg-white dark:bg-[#1a1a24]" style={{ color: meta.color }}>
                 <Icon size={14} /> {meta.label}
               </span>
             )
@@ -240,7 +505,7 @@ function EmptyState({ onSelectPrompt }) {
             <button
               key={idx}
               onClick={() => onSelectPrompt(item.query)}
-              className="p-7 min-h-[140px] rounded-[24px] bg-white border border-gray-200 shadow-sm hover:shadow-md hover:border-yellow-400 transition-all group flex flex-col justify-start text-left"
+              className="p-7 min-h-[140px] rounded-[24px] bg-white dark:bg-[#1a1a24] border border-gray-200 dark:border-purple-800/40 shadow-sm hover:shadow-md hover:border-yellow-400 dark:hover:border-yellow-400 transition-all group flex flex-col justify-start text-left"
             >
               <div className="flex items-center gap-4 w-full">
                 <span
@@ -250,7 +515,7 @@ function EmptyState({ onSelectPrompt }) {
                   <Icon size={18} />
                 </span>
                 <div className="flex-1">
-                  <h3 className="font-bold text-gray-900 text-[15px] group-hover:text-black leading-tight">
+                  <h3 className="font-bold text-gray-900 dark:text-gray-100 text-[15px] group-hover:text-black dark:group-hover:text-white leading-tight">
                     {item.title}
                   </h3>
                 </div>
@@ -279,7 +544,7 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [inputText, setInputText] = useState('')
   const [streaming, setStreaming] = useState(false)
-  const [statusLog, setStatusLog] = useState('')
+  const [statusLogs, setStatusLogs] = useState([])
   const [abortController, setAbortController] = useState(null)
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -298,14 +563,66 @@ export default function App() {
 
   const [farmerMode, setFarmerMode] = useState(false)
   const [agentModel, setAgentModel] = useState('openai/gpt-oss-120b')
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
   const [userGroqKey, setUserGroqKey] = useState('')
   const [activeUrl, setActiveUrl] = useState('')
-  const [uploadedFileIds, setUploadedFileIds] = useState([])
+  const [uploadedFiles, setUploadedFiles] = useState([])
   const [uploadingPdf, setUploadingPdf] = useState(false)
+  const [isListening, setIsListening] = useState(false)
 
   const textareaRef = useRef(null)
   const messagesEndRef = useRef(null)
   const fileInputRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
+
+  const toggleListen = async () => {
+    if (isListening) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
+      setIsListening(false)
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
+      }
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        const formData = new FormData()
+        formData.append('file', audioBlob, 'audio.webm')
+        
+        try {
+          const res = await fetch(`${API_BASE}/chat/transcribe`, {
+            method: 'POST',
+            body: formData,
+          })
+          const data = await res.json()
+          if (data.text) {
+             setInputText(prev => prev + (prev ? ' ' : '') + data.text.trim())
+          }
+        } catch (err) {
+          console.error("Transcription failed:", err)
+        }
+        
+        stream.getTracks().forEach(track => track.stop())
+      }
+
+      mediaRecorder.start()
+      setIsListening(true)
+    } catch (err) {
+      console.error("Microphone access denied:", err)
+      alert("Microphone access is required for voice input.")
+    }
+  }
 
   // Sidebar resize logic
   const startResizing = useCallback((e) => {
@@ -353,7 +670,7 @@ export default function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, statusLog])
+  }, [messages, statusLogs])
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -364,7 +681,7 @@ export default function App() {
 
   const handleSelectSession = async (sessionId) => {
     setActiveSessionId(sessionId)
-    setStatusLog('')
+    setStatusLogs([])
     try {
       const res = await fetch(`${API_BASE}/chat/history/${sessionId}`)
       if (res.ok) {
@@ -377,7 +694,7 @@ export default function App() {
   const handleNewChat = () => {
     setActiveSessionId(genSessionId())
     setMessages([])
-    setStatusLog('')
+    setStatusLogs([])
   }
 
   const handleDeleteSession = async (e, sessionId) => {
@@ -411,7 +728,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/upload/pdf`, { method: 'POST', body: formData })
       if (res.ok) {
         const data = await res.json()
-        if (data.file_id) setUploadedFileIds(prev => [...prev, data.file_id])
+        if (data.file_id) setUploadedFiles(prev => [...prev, { id: data.file_id, name: file.name }])
       }
     } catch (err) { console.error('PDF upload error:', err) }
     finally {
@@ -425,7 +742,7 @@ export default function App() {
       abortController.abort()
       setAbortController(null)
       setStreaming(false)
-      setStatusLog('')
+      setStatusLogs([])
     }
   }
 
@@ -443,10 +760,12 @@ export default function App() {
     setInputText('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
-    const newMsgs = [...messages, { role: 'user', content: textToSend }]
+    const newMsgs = [...messages, { role: 'user', content: textToSend, files: uploadedFiles }]
+    // NOTE: Do NOT clear uploadedFiles here — keep PDF context alive for the full session
+    // setUploadedFiles([])  ← removed: this was causing PDF to be forgotten on 2nd question
     setMessages(newMsgs)
     setStreaming(true)
-    setStatusLog('Agent is thinking...')
+    setStatusLogs([{ node: 'system', msg: 'Agent is thinking...' }])
 
     const controller = new AbortController()
     setAbortController(controller)
@@ -457,7 +776,7 @@ export default function App() {
     const params = new URLSearchParams({
       session_id: activeSessionId,
       message: textToSend,
-      file_ids: uploadedFileIds.join(','),
+      file_ids: uploadedFiles.map(f => f.id).join(','),
       active_url: activeUrl.trim(),
       user_groq_key: userGroqKey.trim(),
       agent_model: agentModel,
@@ -492,7 +811,12 @@ export default function App() {
             try {
               const data = JSON.parse(dataStr)
               if (currentEvent === 'log' || data.node) {
-                if (data.message) setStatusLog(data.message)
+                if (data.message) {
+                  setStatusLogs(prev => {
+                    if (prev.length > 0 && prev[prev.length - 1].msg === data.message) return prev;
+                    return [...prev, { node: data.node || 'system', msg: data.message }];
+                  });
+                }
               } else if (currentEvent === 'result' || data.answer) {
                 setMessages(prev => {
                   const updated = [...prev]
@@ -501,10 +825,14 @@ export default function App() {
                     content: data.answer,
                     route: data.route || 'general',
                     sources: data.sources || [],
+                    total_tokens: data.total_tokens || 0,
+                    tools_called: data.tools_called || [],
+                    response_time: data.response_time || 0,
+                    execution_flow: data.execution_flow || statusLogs,
                   }
                   return updated
                 })
-                setStatusLog('')
+                setStatusLogs([])
               } else if (currentEvent === 'error' || data.error) {
                 setMessages(prev => {
                   const updated = [...prev]
@@ -515,7 +843,7 @@ export default function App() {
                   }
                   return updated
                 })
-                setStatusLog('')
+                setStatusLogs([])
               }
             } catch (jsonErr) {}
           }
@@ -543,7 +871,7 @@ export default function App() {
           return updated
         })
       }
-      setStatusLog('')
+      setStatusLogs([])
     } finally {
       setStreaming(false)
       setAbortController(null)
@@ -608,16 +936,16 @@ export default function App() {
                   placeholder="•••••••••••••••••••••"
                   value={userGroqKey}
                   onChange={(e) => setUserGroqKey(e.target.value)}
-                  className="w-full px-4 py-3.5 rounded-xl bg-white border border-gray-200 text-[14px] font-bold text-gray-900 shadow-sm outline-none focus:border-[#F5C518] focus:ring-2 focus:ring-yellow-400/20 transition-all leading-normal h-12 pr-10"
+                  className="w-full px-4 py-3.5 rounded-xl bg-white dark:bg-[#1a1a24] border border-gray-200 dark:border-purple-800/40 text-[14px] font-bold text-gray-900 dark:text-gray-100 shadow-sm outline-none focus:border-[#F5C518] focus:ring-2 focus:ring-yellow-400/20 transition-all leading-normal h-12 pr-10"
                 />
                 <Eye size={16} className="absolute right-4 top-[14px] text-gray-400" />
               </div>
               <p className="text-[11px] text-gray-400 mt-2 font-medium">Leave blank to use built-in key</p>
               <div className="mt-1.5">
                 {userGroqKey.trim() ? (
-                  <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500"></span> Custom key active</span>
+                  <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-500 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500"></span> Custom key active</span>
                 ) : (
-                  <span className="text-[11px] font-bold text-amber-700 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#F5C518]"></span> Built-in key active</span>
+                  <span className="text-[11px] font-bold text-amber-700 dark:text-amber-500 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#F5C518]"></span> Built-in key active</span>
                 )}
               </div>
             </div>
@@ -631,17 +959,17 @@ export default function App() {
                 placeholder="https://example.com/article"
                 value={activeUrl}
                 onChange={(e) => setActiveUrl(e.target.value)}
-                className="w-full px-4 py-3.5 rounded-xl bg-white border border-gray-200 text-[14px] font-medium text-gray-900 shadow-sm outline-none focus:border-[#F5C518] focus:ring-2 focus:ring-yellow-400/20 transition-all leading-normal h-12"
+                className="w-full px-4 py-3.5 rounded-xl bg-white dark:bg-[#1a1a24] border border-gray-200 dark:border-purple-800/40 text-[14px] font-medium text-gray-900 dark:text-gray-100 shadow-sm outline-none focus:border-[#F5C518] focus:ring-2 focus:ring-yellow-400/20 transition-all leading-normal h-12"
               />
             </div>
           </div>
 
-          <div className="pt-6 border-t border-gray-200">
+          <div className="pt-6 border-t border-gray-200 dark:border-purple-800/40">
             <div className="flex items-center justify-between mb-4">
               <span className="text-[12px] font-black text-gray-500 uppercase tracking-widest flex items-center gap-2">
                 <Clock size={14} className="text-[#F5C518]" /> Chat History ({sessions.length})
               </span>
-              <button onClick={loadSessions} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"><RefreshCw size={14} className="text-gray-400 hover:text-black" /></button>
+              <button onClick={loadSessions} className="p-1.5 hover:bg-gray-100 dark:hover:bg-purple-900/30 rounded-lg transition-colors"><RefreshCw size={14} className="text-gray-400 hover:text-black dark:hover:text-white" /></button>
             </div>
             <div className="space-y-2 max-h-72 overflow-y-auto pr-3">
               {sessions.map(s => {
@@ -721,15 +1049,10 @@ export default function App() {
                     key={idx} 
                     msg={msg} 
                     isStreaming={streaming && idx === messages.length - 1 && msg.role === 'assistant'} 
+                    currentLogs={statusLogs}
                     onEdit={handleEditMessage} 
                   />
                 ))}
-                {statusLog && (
-                  <div className="flex items-center gap-3 max-w-[80%] mx-auto bg-gray-50 border border-gray-200 rounded-full px-5 py-3 text-[14px] font-bold text-gray-600 shadow-sm animate-fade-in mb-6">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#F5C518] animate-ping"></span>
-                    {statusLog}
-                  </div>
-                )}
                 <div ref={messagesEndRef} className="h-32" />
               </div>
             )}
@@ -757,34 +1080,84 @@ export default function App() {
                   <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-4 py-2 rounded-full hover:bg-gray-100 dark:hover:bg-purple-900/30 text-[14px] font-bold text-gray-600 dark:text-gray-300 transition-colors">
                     <Paperclip size={16} /> Attach
                     {uploadingPdf && <span className="text-emerald-500 dark:text-emerald-400 text-[11px] ml-1">Uploading...</span>}
-                    {uploadedFileIds.length > 0 && <span className="w-2 h-2 rounded-full bg-emerald-500 dark:bg-emerald-400 ml-1"></span>}
+                    {uploadedFiles.length > 0 && <span className="w-5 h-5 flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400 text-[11px] ml-1">{uploadedFiles.length}</span>}
                   </button>
                 </div>
+                {/* PDF active badge — shows filename and allows clearing */}
+                {uploadedFiles.length > 0 && (
+                  <div className="flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 text-[12px] font-medium max-w-[200px]">
+                    <span className="truncate" title={uploadedFiles.map(f => f.name).join(', ')}>
+                      📄 {uploadedFiles[uploadedFiles.length - 1].name}
+                    </span>
+                    <button
+                      onClick={() => setUploadedFiles([])}
+                      className="ml-1 text-emerald-500 hover:text-red-500 dark:hover:text-red-400 transition-colors font-bold flex-shrink-0"
+                      title="Remove PDF"
+                    >×</button>
+                  </div>
+                )}
                 
                 <button onClick={() => setFarmerMode(!farmerMode)} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[14px] font-bold transition-colors ${farmerMode ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 shadow-sm' : 'hover:bg-gray-100 dark:hover:bg-purple-900/30 text-gray-600 dark:text-gray-300'}`}>
                   <Sprout size={16} className={farmerMode ? 'text-emerald-500 dark:text-emerald-400' : ''} /> Farmer Mode 
                 </button>
                 
-                <div className="relative group flex items-center">
-                  <select 
-                    value={agentModel}
-                    onChange={(e) => setAgentModel(e.target.value)}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    title="Select Agent Model"
+                <div className="relative flex items-center">
+                  <button 
+                    onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-full text-[14px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-purple-900/30 transition-colors relative"
                   >
-                    <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
-                    <option value="qwen/qwen3.6-27b">qwen/qwen3.6-27b</option>
-                  </select>
-                  <button className="flex items-center gap-2 px-4 py-2 rounded-full text-[14px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-purple-900/30 transition-colors relative">
                     <Cpu size={16} className="text-[#F5C518] dark:text-purple-400" />
-                    Model <ChevronDown size={16} className="text-gray-400 dark:text-gray-500" />
+                    {agentModel.split('/')[1] || 'Model'} <ChevronDown size={16} className={`text-gray-400 dark:text-gray-500 transition-transform ${isModelDropdownOpen ? 'rotate-180' : ''}`} />
                   </button>
+
+                  {isModelDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsModelDropdownOpen(false)}></div>
+                      <div className="absolute bottom-full left-0 mb-2 w-56 bg-white dark:bg-[#1a1a24] border border-gray-100 dark:border-purple-800/40 rounded-2xl shadow-xl z-50 overflow-hidden transform origin-bottom-left transition-all">
+                        <div className="p-2 border-b border-gray-50 dark:border-purple-900/30">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 px-3 py-1">Select Brain</p>
+                        </div>
+                        <div className="p-1">
+                          {[
+                            'openai/gpt-oss-120b',
+                            'qwen/qwen3.6-27b',
+                            'openai/gpt-oss-20b',
+                            'qwen/qwen3.8-27b'
+                          ].map(model => (
+                            <button
+                              key={model}
+                              onClick={() => {
+                                setAgentModel(model);
+                                setIsModelDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 rounded-xl text-[13px] font-medium flex items-center justify-between transition-colors ${
+                                agentModel === model 
+                                  ? 'bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300' 
+                                  : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-[#252532]'
+                              }`}
+                            >
+                              <span>{model.split('/')[1]}</span>
+                              {agentModel === model && <Check size={14} className="text-purple-600 dark:text-purple-400" />}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
               
               <div className="flex items-center gap-3">
-                <button className="w-11 h-11 rounded-full bg-white dark:bg-[#1a1a24] border border-gray-200 dark:border-purple-800/40 flex items-center justify-center hover:bg-gray-50 dark:hover:bg-purple-900/30 text-gray-600 dark:text-gray-400 transition-colors shadow-sm">
-                  <Mic size={18} />
+                <button 
+                  onClick={toggleListen}
+                  className={`w-11 h-11 rounded-full border flex items-center justify-center transition-colors shadow-sm ${
+                    isListening 
+                      ? 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800/40 text-red-500 animate-pulse' 
+                      : 'bg-white dark:bg-[#1a1a24] border-gray-200 dark:border-purple-800/40 hover:bg-gray-50 dark:hover:bg-purple-900/30 text-gray-600 dark:text-gray-400'
+                  }`}
+                  title={isListening ? "Stop listening" : "Start speaking"}
+                >
+                  {isListening ? <Square size={16} fill="currentColor" /> : <Mic size={18} />}
                 </button>
                 <button 
                   onClick={() => streaming ? handleStop() : handleSend()} 

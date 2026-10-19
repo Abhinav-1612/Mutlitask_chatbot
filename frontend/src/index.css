@@ -83,22 +83,48 @@ html.dark ::-webkit-scrollbar-thumb:hover { background: #374151; }
   padding: 0.5rem 1rem; border-radius: 0 8px 8px 0;
   color: #78350f; margin: 0.8em 0;
 }
-.prose table { width: 100%; border-collapse: collapse; font-size: 0.93em; margin: 0.9em 0; }
-.prose th { background: #fef08a; color: #000; font-weight: 700; padding: 0.5rem 0.75rem; border: 1px solid #e5e7eb; }
-.prose td { padding: 0.45rem 0.75rem; border: 1px solid #e5e7eb; }
+.prose table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.9em;
+  margin: 1.1em 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+.prose th {
+  background: #fef08a;
+  color: #111827;
+  font-weight: 800;
+  padding: 0.65rem 0.9rem;
+  text-align: left;
+  border-bottom: 2px solid #e5e7eb;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.prose td {
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: top;
+  line-height: 1.55;
+}
+.prose tr:last-child td { border-bottom: none; }
 .prose tr:nth-child(even) td { background: #fafafa; }
 
 /* ── Clean Dark Prose ── */
 .dark .prose { color: #d1d5db; }
 .dark .prose h1, .dark .prose h2, .dark .prose h3 { color: #f3f4f6; font-weight: 800; }
 .dark .prose strong { color: #f9fafb; }
-.dark .prose a { color: #60a5fa; }
-.dark .prose a:hover { color: #93c5fd; }
+.dark .prose a { color: #38bdf8; }
+.dark .prose a:hover { color: #7dd3fc; }
 .dark .prose code { background: rgba(255,255,255,0.1); color: #e5e7eb; border: 1px solid rgba(255,255,255,0.2); }
 .dark .prose pre { background: #111827; border: 1px solid #374151; }
 .dark .prose pre code { background: transparent; border: none; color: #e5e7eb; }
 .dark .prose blockquote { background: rgba(255,255,255,0.05); border-left: 4px solid #6b7280; color: #9ca3af; }
-.dark .prose table { border-collapse: separate; border-spacing: 0; }
-.dark .prose th { background: rgba(255,255,255,0.1); color: #f3f4f6; border: 1px solid #374151; }
-.dark .prose td { border: 1px solid #374151; }
+.dark .prose table { border-color: #374151; border-radius: 12px; }
+.dark .prose th { background: #1f1f2e; color: #f3f4f6; border-bottom: 2px solid #374151; border-color: #374151; }
+.dark .prose td { border-bottom: 1px solid #2d2d3f; border-color: #374151; color: #d1d5db; }
 .dark .prose tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
