@@ -12,7 +12,7 @@ Annotated reducers handle parallel branch merging safely.
 from __future__ import annotations
 
 import operator 
-from typing import Annotated, TypedDict, Sequence
+from typing import Annotated, TypedDict, Sequence, Any
 
 
 class UniversalAgentState(TypedDict): # this stores everything needed by chatbot 
@@ -58,6 +58,13 @@ class UniversalAgentState(TypedDict): # this stores everything needed by chatbot
     sources: Annotated[list[dict], operator.add] # store sources used to generate ans 
     """Source documents/URLs used to generate the answer."""
 
+    # ── Stats ─────────────────────────────────────────────────────────────────
+    total_tokens: int
+    """Total LLM tokens used during this invocation."""
+
+    tools_called: Annotated[list[str], operator.add]
+    """List of tool names called during this invocation."""
+
     # ── Output ────────────────────────────────────────────────────────────────
     final_answer: str # final llm response 
     """The assembled Markdown response sent back to the user."""
@@ -72,6 +79,9 @@ class UniversalAgentState(TypedDict): # this stores everything needed by chatbot
     agent_model: str
     """The specific Groq LLM model to use for the agent."""
 
+    event_queue: Any | None
+    """Optional asyncio.Queue for real-time SSE progress events."""
+
 
 def initial_state( # create fresh state before graph starts 
     session_id: str,
@@ -82,6 +92,7 @@ def initial_state( # create fresh state before graph starts
     user_groq_key: str = "",
     agent_model: str = "openai/gpt-oss-120b",
     farmer_mode: bool = False,
+    event_queue: Any | None = None,
 ) -> UniversalAgentState:
     """Build a clean initial state for a new graph invocation."""
     return UniversalAgentState(
@@ -98,7 +109,10 @@ def initial_state( # create fresh state before graph starts
         final_answer="",
         user_groq_key=user_groq_key or "",
         agent_model=agent_model,
+        total_tokens=0,
+        tools_called=[],
         logs=[f"[graph] Session {session_id} — query: {query[:60]}..."],
+        event_queue=event_queue,
     )
  
 #  User Message

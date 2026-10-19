@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio #Used for asynchronous programming.
 import json #Converts Python objects into JSON.
 import logging
+import time
 import uuid#Generates unique Session IDs.
 from datetime import datetime, timezone
 from typing import AsyncIterator  #Used in streaming. 
@@ -103,6 +104,14 @@ async def chat( # main chat function
     # Release any session/title write lock before slow LLM and tool calls.
     await db.commit() # save title 
 
+    start_time = time.time()
+    event_queue = asyncio.Queue()
+    flow_steps = []
+
+    first_node = "Farmer Node" if request.farmer_mode else "Router Node"
+    first_msg = "🧭 Farmer Mode active — routing to Farmer Node" if request.farmer_mode else "🧭 Analyzing query intent → Routing to Omni-Agent Node"
+    flow_steps.append({"node": first_node, "message": first_msg})
+
     # ── Build initial state ────────────────────────────────────────────────────
     state = initial_state( # creates langgraph state 
         session_id=session_id,
@@ -113,6 +122,7 @@ async def chat( # main chat function
         user_groq_key=request.user_groq_key or "",
         agent_model=request.agent_model,
         farmer_mode=request.farmer_mode,
+        event_queue=event_queue,
     )
 
     # ── Run LangGraph pipeline ────────────────────────────────────────────────
@@ -123,6 +133,14 @@ async def chat( # main chat function
         logger.error("[chat] Pipeline error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Agent pipeline failed: {exc}")
 
+    while not event_queue.empty():
+        try:
+            it = event_queue.get_nowait()
+            flow_steps.append({"node": it["node"], "message": it["message"]})
+        except Exception:
+            break
+
+    response_time = round(time.time() - start_time, 2)
     answer     = final_state.get("final_answer", "I'm sorry, I couldn't generate a response.") # read the answer 
     route_used = final_state.get("route_used", "general") # reads which agent answered 
     sources    = final_state.get("sources", []) # gets sources used by agent
@@ -140,6 +158,8 @@ async def chat( # main chat function
         route_used=AgentRoute(route_used),
         sources=sources,
         history=_history_to_out(updated_history),
+        response_time=response_time,
+        execution_flow=flow_steps,
     )
 
 
@@ -166,11 +186,8 @@ async def chat_stream(
 
     Event types:
       - ``log``      : node transition message {"node": ..., "message": ...}
-      - ``result``   : final answer {"answer": ..., "route": ..., "sources": [...]}
+      - ``result``   : final answer {"answer": ..., "route": ..., "sources": [...], "response_time": ..., "execution_flow": [...]}
       - ``error``    : pipeline error {"error": ...}
-
-    Usage (curl):
-        curl -N "http://localhost:8000/chat/stream?session_id=abc&message=Hello"
     """
     file_id_list = [f.strip() for f in file_ids.split(",") if f.strip()]
 
@@ -190,6 +207,19 @@ async def chat_stream(
             # Never hold a SQLite write transaction while the graph calls APIs.
             await db.commit()
 
+            start_time = time.time()
+            event_queue = asyncio.Queue()
+            flow_steps = []
+
+            first_node = "Farmer Node" if farmer_mode else "Router Node"
+            first_msg = "🧭 Farmer Mode active — routing to Farmer Node" if farmer_mode else "🧭 Analyzing query intent → Routing to Omni-Agent Node"
+            flow_steps.append({"node": first_node, "message": first_msg})
+
+            yield { # Immediately send initial router log event
+                "event": "log",
+                "data": json.dumps({"node": first_node, "message": first_msg}),
+            }
+
             state = initial_state(
                 session_id=session_id,
                 query=message,
@@ -199,69 +229,44 @@ async def chat_stream(
                 user_groq_key=user_groq_key or "",
                 agent_model=agent_model,
                 farmer_mode=farmer_mode,
+                event_queue=event_queue,
             )
 
-            yield { #Immediately send event.
-                "event": "log",
-                "data": json.dumps({"node": "system", "message": f"🤖 Processing: '{message[:50]}'"}),
-            }
+            graph = get_graph()
+            SENTINEL = object()
 
-            graph       = get_graph()
-            seen_logs   : set[str] = set()
-            complete_state: dict = {}
+            async def _run_workflow():
+                try:
+                    res = await graph.ainvoke(state)
+                    await event_queue.put((SENTINEL, res, None))
+                except Exception as err:
+                    await event_queue.put((SENTINEL, None, err))
 
-            # Stream full state at each step
-            async for chunk in graph.astream(state, stream_mode="values"):
-                complete_state = chunk
+            asyncio.create_task(_run_workflow())
 
-                # Emit new log lines
-                for log_line in chunk.get("logs", []):
-                    if log_line not in seen_logs:
-                        seen_logs.add(log_line)
-                        # Try to extract node name from log format "[HH:MM:SS][node_name]"
-                        node = "system"
-                        if "][" in log_line:
-                            try:
-                                node = log_line.split("][")[1].split("]")[0]
-                            except Exception:
-                                pass
-                        yield {
-                            "event": "log",
-                            "data": json.dumps({"node": node, "message": log_line}),
-                        }
+            complete_state = None
+            while True:
+                item = await event_queue.get()
+                if isinstance(item, tuple) and len(item) == 3 and item[0] is SENTINEL:
+                    _, res_state, workflow_err = item
+                    if workflow_err:
+                        raise workflow_err
+                    complete_state = res_state
+                    break
 
-                # Emit route decision log once we have a route (if not 'general')
-                if chunk.get("next_node") and chunk.get("next_node") != "general" and "route_logged" not in seen_logs:
-                    seen_logs.add("route_logged")
-                    yield {
-                        "event": "log",
-                        "data": json.dumps({
-                            "node": "router",
-                            "message": f"🔀 Routing to: {chunk['next_node'].upper()}",
-                        }),
-                    }
-                    
-                    # Emit tool notification
-                    route = chunk.get("route_used", chunk.get("next_node"))
-                    tool_labels = {
-                        "web": "🌐 Web Search Tool",
-                        "finance": "📈 Finance Tool",
-                        "rag": "📚 Document Retrieval Tool",
-                    }
-                    if route in tool_labels:
-                        yield {
-                            "event": "log",
-                            "data": json.dumps({
-                                "node": "router",
-                                "message": f"⚙️ Using: {tool_labels[route]}",
-                            }),
-                        }
+                flow_steps.append({"node": item["node"], "message": item["message"]})
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"node": item["node"], "message": item["message"]}),
+                }
 
-                await asyncio.sleep(0)
+            response_time = round(time.time() - start_time, 2)
 
-            answer     = complete_state.get("final_answer", "No response generated.")
-            route_used = complete_state.get("route_used", "general")
-            sources    = complete_state.get("sources", [])
+            answer       = complete_state.get("final_answer", "No response generated.")
+            route_used   = complete_state.get("route_used", "general")
+            sources      = complete_state.get("sources", [])
+            total_tokens = complete_state.get("total_tokens", 0)
+            tools_called = complete_state.get("tools_called", [])
 
             # Save to SQL
             await add_message(db, session_id, "user",      message)
@@ -271,10 +276,14 @@ async def chat_stream(
             yield {
                 "event": "result",
                 "data": json.dumps({
-                    "session_id": session_id,
-                    "answer":     answer,
-                    "route":      route_used,
-                    "sources":    sources,
+                    "session_id":     session_id,
+                    "answer":         answer,
+                    "route":          route_used,
+                    "sources":        sources,
+                    "total_tokens":   total_tokens,
+                    "tools_called":   tools_called,
+                    "response_time":  response_time,
+                    "execution_flow": flow_steps,
                 }),
             }
 
@@ -404,3 +413,40 @@ async def toggle_pin_session(
 #    │
 #    ▼
 # Return Response
+
+from fastapi import UploadFile, File
+import os
+import tempfile
+from groq import Groq
+from app.config import settings
+
+@router.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Transcribe audio using Groq Whisper API."""
+    if not settings.groq_api_key:
+        raise HTTPException(status_code=500, detail="Groq API key not configured")
+    
+    # Save uploaded file to temp file
+    try:
+        suffix = os.path.splitext(file.filename)[1] if file.filename else ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+
+        client = Groq(api_key=settings.groq_api_key)
+        
+        with open(tmp_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3",
+                response_format="json",
+                language="en",
+                temperature=0.0
+            )
+        
+        os.remove(tmp_path)
+        return {"text": transcription.text}
+        
+    except Exception as e:
+        logger.error("[chat] Transcribe error: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))

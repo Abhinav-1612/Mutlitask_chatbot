@@ -52,10 +52,14 @@ async def lifespan(app: FastAPI):
     logger.info("[startup] ✅ SQLite DB ready.")
 
     # Pre-compile LangGraph (avoids cold-start on first request)
-    from app.graph import compile_graph #Imports graph compiler.
-    compile_graph() # Compiles the graph.  Without thisUser's first requestGraph buildsResponse becomes slow.So graph is built during startup.
-
+    from app.graph import compile_graph
+    compile_graph()
     logger.info("[startup] ✅ LangGraph pipeline compiled.")
+
+    # Pre-warm FastEmbed model in background thread (avoids 3.4s cold-start on first RAG/PDF search)
+    import asyncio
+    from app.database.vector_db import get_embedder
+    asyncio.create_task(asyncio.to_thread(get_embedder))
 
     logger.info("[startup] 🚀 API live at http://%s:%s/docs", settings.app_host, settings.app_port)
     yield

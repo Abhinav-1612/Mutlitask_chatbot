@@ -66,11 +66,13 @@ class MessageOut(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    session_id: str
-    reply:      str
-    route_used: AgentRoute
-    sources:    list[dict[str, Any]] = Field(default_factory=list)
-    history:    list[MessageOut]     = Field(default_factory=list)
+    session_id:     str
+    reply:          str
+    route_used:     AgentRoute
+    sources:        list[dict[str, Any]] = Field(default_factory=list)
+    history:        list[MessageOut]     = Field(default_factory=list)
+    response_time:  float                = Field(default=0.0, description="Latency in seconds")
+    execution_flow: list[dict[str, Any]] = Field(default_factory=list, description="Step-by-step node execution trace")
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────

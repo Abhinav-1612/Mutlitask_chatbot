@@ -78,7 +78,7 @@ _WEATHER_CODES = {
 }
 
 
-def _fetch_json(url: str, timeout: int = 10) -> dict[str, Any]:
+def _fetch_json(url: str, timeout: int = 4) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "Omni-Agent/1.0"},
@@ -230,38 +230,63 @@ def _clean_html(raw_html: str) -> str:
 
 def _google_news_rss_sync(
     query: str,
-    max_results: int,
-    freshness: str | None,
+    max_results: int = 8,
+    freshness: str | None = None,
 ) -> list[dict[str, Any]]:
-    freshness_suffix = {"d": " when:1d", "w": " when:7d", "m": " when:30d"}.get(
-        freshness, ""
-    )
-    encoded_query = urllib.parse.quote_plus(f"{query}{freshness_suffix}")
-    url = (
-        "https://news.google.com/rss/search"
-        f"?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
-    )
-    request = urllib.request.Request(url, headers={"User-Agent": "Omni-Agent/1.0"})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        root = ET.fromstring(response.read())
-
-    results = []
-    for item in root.findall("./channel/item")[:max_results]:
-        published_raw = item.findtext("pubDate", default="")
+    
+    query_str = query
+    if freshness == "d":
+        query_str += " when:1d"
+    elif freshness == "w":
+        query_str += " when:7d"
+    elif freshness == "m":
+        query_str += " when:30d"
+        
+    encoded_query = urllib.parse.quote_plus(query_str)
+    
+    # Try regional feed first, fallback to Global/US edition for international cities
+    for gl, hl, ceid in [("IN", "en-IN", "IN:en"), ("US", "en-US", "US:en")]:
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl={hl}&gl={gl}&ceid={ceid}"
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
         try:
-            published_at = parsedate_to_datetime(published_raw).isoformat()
-        except (TypeError, ValueError):
-            published_at = published_raw
-        source_node = item.find("source")
-        results.append(
-            {
-                "title": item.findtext("title", default=""),
-                "url": item.findtext("link", default=""),
-                "snippet": _clean_html(item.findtext("description", default=""))[:500],
-                "published_at": published_at,
-                "source": source_node.text if source_node is not None else "Google News",
-            }
-        )
+            with urllib.request.urlopen(request, timeout=4) as response:
+                root = ET.fromstring(response.read())
+        except Exception:
+            continue
+
+        results = []
+        for item in root.findall("./channel/item"):
+            published_raw = item.findtext("pubDate", default="")
+            try:
+                dt = parsedate_to_datetime(published_raw)
+                published_at = dt.strftime("%Y-%m-%d %H:%M")
+            except (TypeError, ValueError):
+                published_at = published_raw
+            source_node = item.find("source")
+            source_name = source_node.text if source_node is not None else "News"
+            title = item.findtext("title", default="")
+            if f" - {source_name}" in title:
+                title = title.replace(f" - {source_name}", "").strip()
+
+            link = item.findtext("link", default="")
+            if "news.google.com" in link:
+                if "?oc=" not in link and "&oc=" not in link:
+                    link = f"{link}?oc=5"
+
+            results.append(
+                {
+                    "title": title,
+                    "url": link,
+                    "snippet": _clean_html(item.findtext("description", default=""))[:500],
+                    "published_at": published_at,
+                    "source": source_name,
+                }
+            )
+            if len(results) >= max_results:
+                break
+        if len(results) >= 3:
+            return results
+
     return results
 
 
@@ -276,7 +301,7 @@ def _bing_web_rss_sync(query: str, max_results: int) -> list[dict[str, Any]]:
     )
     url = f"https://www.bing.com/search?{params}"
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=4) as response:
         root = ET.fromstring(response.read())
 
     results = []
@@ -331,7 +356,7 @@ def _fetch_newsapi_sync(
     request = urllib.request.Request(url, headers={"User-Agent": "Omni-Agent/1.0"})
 
     try:
-        with urllib.request.urlopen(request, timeout=10) as resp:
+        with urllib.request.urlopen(request, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in (426, 429, 401):
@@ -401,7 +426,7 @@ def _fetch_tavily_news_sync(
         headers={"Content-Type": "application/json", "User-Agent": "Omni-Agent/1.0"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=12) as resp:
+    with urllib.request.urlopen(request, timeout=4) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     raw_results = data.get("results", [])
@@ -449,7 +474,7 @@ def _fetch_tavily_general_sync(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=12) as resp:
+        with urllib.request.urlopen(request, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         raw_results = data.get("results", [])
@@ -476,13 +501,13 @@ def _fetch_ddg_news_sync(
     max_results: int = 8,
     freshness: str | None = "d",
 ) -> list[dict[str, Any]]:
-    """Last-resort news via DuckDuckGo news API."""
+    """Local and regional news via DuckDuckGo news API."""
     try:
         from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
+        with DDGS(timeout=3) as ddgs:
             raw = list(ddgs.news(
                 query,
-                region="wt-wt",
+                region="in-en",
                 safesearch="moderate",
                 timelimit=freshness,
                 max_results=max_results,
@@ -492,8 +517,8 @@ def _fetch_ddg_news_sync(
                 "title": r.get("title", ""),
                 "url": r.get("url", ""),
                 "snippet": _clean_snippet(r.get("body", "")),
-                "published_at": r.get("date", ""),
-                "source": r.get("source", ""),
+                "published_at": r.get("date", "")[:16],
+                "source": r.get("source", "") or "News",
                 "image_url": r.get("image", ""),
             }
             for r in raw
@@ -523,7 +548,7 @@ def _fetch_currents_api_sync(
         headers={"User-Agent": "Omni-Agent/1.0"},
         method="GET",
     )
-    with urllib.request.urlopen(request, timeout=12) as resp:
+    with urllib.request.urlopen(request, timeout=4) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     if data.get("status") != "ok":
@@ -549,16 +574,15 @@ def _fetch_currents_api_sync(
 def clean_news_query(raw_query: str) -> str:
     """Sanitize conversational user query into a clean, keyword-focused news search query."""
     cleaned = re.sub(
-        r"\b(?:provide|tell me|give me|show me|what is|what's|can you give|summarize|summary|todays?|today's|today|latest|recent|current|breaking|top|daily|roundup|digest|news|headlines?|updates?|about|of|for|the|in)\b",
+        r"\b(?:i\s+want|i\s+need|i\s+would\s+like|can\s+you\s+give|can\s+you\s+tell|can\s+you|please|give\s+me|tell\s+me|show\s+me|find\s+me|search\s+for|what\s+is|what\s+are|what's|provide|summarize|summary|todays?|today's|today|latest|recent|current|breaking|top|daily|roundup|digest|news|headlines?|updates?|only|just|about|of|for|the|in|from)\b",
         " ",
         raw_query,
         flags=re.IGNORECASE
     )
     cleaned = re.sub(r"['’]s\b", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,?.!")
-    if not cleaned:
-        cleaned = raw_query.strip()
-    return f"{cleaned} news" if not cleaned.lower().endswith("news") else cleaned
+    cleaned = re.sub(r"[^\w\s]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned if cleaned else raw_query.strip()
 
 
 def _news_search_sync(
@@ -567,74 +591,48 @@ def _news_search_sync(
     freshness: str | None = "d",
 ) -> list[dict[str, Any]]:
     """
-    Tiered news search:
-      1. Currents API (primary — excellent for global/national news)
-      2. NewsAPI (fallback)
-      3. Tavily news (fallback)
-      4. DuckDuckGo news (fallback)
-      5. Google News RSS (safety net with freshness='d')
-      6. Google News RSS (safety net with freshness=None for smaller cities/regions)
-      7. General web search (final fallback)
+    Ultra-low latency regional & international news search with direct working URLs:
+      1. DuckDuckGo News (Direct publication URLs, high freshness)
+      2. Tavily News (High-accuracy real-time news)
+      3. Google News RSS (Fallback)
+      4. NewsAPI (Fallback)
     """
     cleaned_query = clean_news_query(query)
+    search_q = f"{cleaned_query} news" if "news" not in cleaned_query.lower() else cleaned_query
     
-    # 1. Try Currents API
+    # 1. DuckDuckGo News (Direct URLs from NDTV, TOI, Hindu, Express, Outlook, etc.)
     try:
-        results = _fetch_currents_api_sync(cleaned_query, max_results)
-        if len(results) >= 3:
-            return results
-        logger.info("[news] Currents API returned <3 results — trying NewsAPI")
+        ddg_results = _fetch_ddg_news_sync(search_q, max_results=max_results, freshness=freshness)
+        if len(ddg_results) >= 5:
+            logger.info("[news] DDG news returned %d fresh articles with direct URLs ✓", len(ddg_results))
+            return ddg_results
     except Exception as exc:
-        logger.warning("[news] Currents API failed (%s) — falling back to NewsAPI", exc)
+        logger.warning("[news] DDG news failed: %s", exc)
 
-    # 2. Try NewsAPI
+    # 2. Try Tavily News
     try:
-        results = _fetch_newsapi_sync(cleaned_query, max_results, freshness)
-        if len(results) >= 3:
-            return results
-        logger.info("[news] NewsAPI returned <3 results — trying Tavily")
-    except NewsAPIQuotaExceeded as exc:
-        logger.warning("[news] NewsAPI quota exceeded (%s) — falling back to Tavily", exc)
+        tavily_results = _fetch_tavily_news_sync(search_q, max_results=max_results)
+        if len(tavily_results) >= 5:
+            logger.info("[news] Tavily news returned %d articles ✓", len(tavily_results))
+            return tavily_results
     except Exception as exc:
-        logger.warning("[news] NewsAPI failed (%s) — falling back to Tavily", exc)
+        logger.warning("[news] Tavily news failed: %s", exc)
 
-    # 3. Try Tavily
+    # 3. Google News RSS (Fallback)
     try:
-        results = _fetch_tavily_news_sync(cleaned_query, max_results)
-        if len(results) >= 3:
-            return results
-        logger.info("[news] Tavily returned <3 results — trying DuckDuckGo")
+        rss_results = _google_news_rss_sync(cleaned_query, max_results=max_results, freshness=freshness)
+        if rss_results:
+            return rss_results
     except Exception as exc:
-        logger.warning("[news] Tavily failed (%s) — falling back to DuckDuckGo", exc)
+        logger.warning("[news] Google News RSS failed: %s", exc)
 
-    # 4. Try DuckDuckGo news
-    results = _fetch_ddg_news_sync(cleaned_query, max_results, freshness)
-    if len(results) >= 3:
-        return results
-
-    # 5. Google News RSS (with freshness 'd')
+    # 4. Try NewsAPI (Fallback)
     try:
-        results = _google_news_rss_sync(cleaned_query, max_results, freshness)
-        if len(results) >= 3:
-            return results
+        newsapi_results = _fetch_newsapi_sync(cleaned_query, max_results, freshness)
+        if newsapi_results:
+            return newsapi_results
     except Exception as exc:
-        logger.warning("[news] Google News RSS (d) failed: %s", exc)
-
-    # 6. Google News RSS (without restrictive 1d filter so any city like Varanasi gets local headlines)
-    try:
-        results = _google_news_rss_sync(cleaned_query, max_results, freshness=None)
-        if results:
-            return results
-    except Exception as exc:
-        logger.warning("[news] Google News RSS (all) failed: %s", exc)
-
-    # 7. General Web search fallback for "{city} news"
-    try:
-        results = _ddg_search_sync(cleaned_query, max_results)
-        if results:
-            return results
-    except Exception as exc:
-        logger.error("[news] All news sources failed. Last error: %s", exc)
+        logger.warning("[news] NewsAPI failed: %s", exc)
 
     return []
 
@@ -696,47 +694,72 @@ def _ddg_search_sync(
             return []
 
 
+def _expand_search_queries(query: str) -> list[str]:
+    """If a query asks for multiple historical or leadership aspects, generate targeted sub-queries."""
+    q_lower = query.lower()
+    queries = [query]
+    if any(w in q_lower for w in ["first", "founding", "founder", "inception", "former", "previous"]) and \
+       any(w in q_lower for w in ["current", "present", "now", "latest", "incumbent"]):
+        clean_target = re.sub(r"\b(?:tell|me|about|who|is|was|the|what|and|or|current|present|first|founding|founder|director|directors|ceo|ceos|president|presidents|of|in)\b", " ", q_lower)
+        clean_target = re.sub(r"\s+", " ", clean_target).strip()
+        if clean_target:
+            queries.append(f"first founding director {clean_target}")
+    return queries
+
+
 async def web_search(
     query: str,
-    max_results: int = 6,
+    max_results: int = 5,
     *,
     news: bool = False,
     freshness: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    General web search via Tavily with a DuckDuckGo fallback.
+    General web search: runs Tavily and DuckDuckGo IN PARALLEL, merges results.
+    Falls back to Wikipedia if both fail.
     """
     loop = asyncio.get_running_loop()
-    
-    # 1. Try Tavily general search first
-    try:
-        results = await loop.run_in_executor(
-            None,
-            _fetch_tavily_general_sync,
-            query,
-            max_results,
-        )
-        if results:
-            logger.info("[search] query='%s' fetched via Tavily general", query)
-            return results
-    except Exception as exc:
-        logger.warning("[search] Tavily general failed (%s) — falling back to DDG", exc)
+    queries = _expand_search_queries(query)
+    all_results = []
+    seen_urls = set()
 
-    # 2. Fallback to DuckDuckGo search
-    results = await loop.run_in_executor(
-        None,
-        _ddg_search_sync,
-        query,
-        max_results,
-        freshness,
-    )
-    logger.info(
-        "[search] query='%s' freshness=%s fetched via DDG fallback, results=%d",
-        query,
-        freshness,
-        len(results),
-    )
-    return results
+    for q in queries:
+        # Run Tavily and DDG concurrently instead of sequentially
+        tavily_fut = loop.run_in_executor(None, _fetch_tavily_general_sync, q, max_results)
+        ddg_fut    = loop.run_in_executor(None, _ddg_search_sync, q, max_results, freshness)
+
+        tavily_res, ddg_res = await asyncio.gather(tavily_fut, ddg_fut, return_exceptions=True)
+
+        # Prefer Tavily, fill gaps with DDG
+        primary = tavily_res if isinstance(tavily_res, list) and tavily_res else []
+        secondary = ddg_res if isinstance(ddg_res, list) and ddg_res else []
+
+        if not primary:
+            logger.warning("[search] Tavily general failed for '%s', using DDG only", q)
+        if not secondary:
+            logger.warning("[search] DDG failed for '%s'", q)
+
+        for item in (primary + secondary):
+            url = item.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                all_results.append(item)
+
+    if all_results:
+        return all_results[:max_results]
+
+    # Last resort: Wikipedia fallback
+    try:
+        wiki_results = await search_wikipedia(query, max_results=3)
+        if wiki_results:
+            logger.info("[search] query='%s' fetched via Wikipedia fallback (%d results)", query, len(wiki_results))
+            for r in wiki_results:
+                r["source"] = "Wikipedia"
+            return wiki_results
+    except Exception as exc:
+        logger.warning("[search] Wikipedia fallback failed: %s", exc)
+
+    return []
 
 
 def format_search_results(results: list[dict[str, Any]]) -> str:
@@ -745,14 +768,15 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
         return "No web results found."
 
     lines = []
-    for index, result in enumerate(results, 1):
+    for index, result in enumerate(results[:5], 1):
         lines.append(f"**[{index}] {result.get('title', 'Untitled')}**")
-        if result.get("published_at"):
-            lines.append(f"Published: {result['published_at']}")
         if result.get("source"):
-            lines.append(f"Publisher: {result['source']}")
+            lines.append(f"Source: {result['source']}")
         lines.append(f"URL: {result.get('url', '')}")
-        lines.append(f"{result.get('snippet', '')}\n")
+        snippet = result.get('snippet', '').strip()
+        if len(snippet) > 250:
+            snippet = snippet[:250] + "..."
+        lines.append(f"{snippet}\n")
     return "\n".join(lines)
 
 
@@ -949,3 +973,30 @@ def format_instagram_results(results: list[dict[str, Any]], topic: str, retrieve
         lines.extend(["", "---", ""])
 
     return "\n".join(lines).rstrip()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WIKIPEDIA SEARCH
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _search_wikipedia_sync(query: str, max_results: int = 3) -> list[dict[str, Any]]:
+    url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&utf8=&format=json&srlimit={max_results}"
+    request = urllib.request.Request(url, headers={"User-Agent": "Omni-Agent/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            results = []
+            for item in data.get("query", {}).get("search", []):
+                snippet = re.sub(r"<[^>]+>", " ", item.get("snippet", ""))
+                results.append({
+                    "title": item.get("title"),
+                    "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote(item.get('title').replace(' ', '_'))}",
+                    "snippet": snippet.strip()
+                })
+            return results
+    except Exception as exc:
+        logger.warning("[search] Wikipedia failed: %s", exc)
+        return []
+
+async def search_wikipedia(query: str, max_results: int = 3) -> list[dict[str, Any]]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _search_wikipedia_sync, query, max_results)
